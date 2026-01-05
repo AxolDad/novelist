@@ -98,6 +98,11 @@ streamlit run dashboard.py
 ```
 
 > Go to the **Home Tab** to create a new Story Project.
+>
+> **💡 Note: "Create Project" vs. "Story Title"**
+>
+> - **Create Project (Home Tab):** Creates a physical folder on your disk. Do this once to start a book. The name you choose here is the folder name.
+> - **Story Title (Story Setup Tab):** Changes the _display title_ of your book in `story_manifest.json`. Use this to rename your book creatively without breaking file paths.
 
 **Start the Agent:**
 
