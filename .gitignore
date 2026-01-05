@@ -1,6 +1,7 @@
 # Secrets
 .env
 .env.local
+.last_active_project
 
 # Project Data
 projects/

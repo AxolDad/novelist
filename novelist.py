@@ -23,6 +23,7 @@ import shutil
 import time
 import argparse
 from typing import Any, Dict, Optional
+import logging
 
 # Import from modules
 from config import (
@@ -41,6 +42,8 @@ from config import (
     PROSE_CONTEXT_MAX_CHARS_EACH,
     STATE_EXCERPT_CHARS,
     WRITER_MODEL,
+    CRITIC_MODEL,
+    LLM_PROVIDER,
 )
 
 from ollama_client import (
@@ -182,6 +185,8 @@ def setup_project_paths(project_path: str) -> Dict[str, str]:
     global MACRO_OUTLINE_FILE, PROGRESS_FILE, OUTPUT_DIR, SCENES_DIR
     global MANUSCRIPT_FILE_DEFAULT, PROJECT_PATH
     
+    # Normalize path for WSL/Cross-platform compatibility
+    project_path = project_path.replace("\\", "/")
     PROJECT_PATH = project_path
     
     # Override all file paths
@@ -504,20 +509,42 @@ def init_project() -> None:
 # ------------------------------------------------------------------
 #  MAIN AGENT LOOP
 # ------------------------------------------------------------------
-def main() -> None:
-    """Main entry point for the novelist agent."""
-    
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Novelist Agent - AI-powered novel writing system")
-    parser.add_argument('--project', type=str, help='Path to project folder (e.g., projects/zero_buoyancy)')
-    args = parser.parse_args()
-    
-    # If project specified, override all file paths to use project folder
-    if args.project:
-        print(f"📂 Loading project: {args.project}")
-        setup_project_paths(args.project)
-    
+def draft_loop(manifest: Dict[str, Any]) -> None:
+    """
+    Main agent loop.
+    Continuously checks for Beads tasks and orchestrates the writing process.
+    """
+    # Ensure we are in a valid project state
     init_project()
+
+    # Configure logging
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    # Clear old log file on fresh start
+    log_file = os.path.join(log_dir, "novelist.log")
+    if os.path.exists(log_file):
+        try:
+            os.remove(log_file)
+        except:
+            pass
+
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        force=True
+    )
+    
+    # Also log to stdout
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    console.setFormatter(formatter)
+    logging.getLogger('').addHandler(console)
+
+    logging.info("🚀 Novelist Agent Starting...")
 
     manifest = safe_read_json(MANIFEST_FILE, {})
     system_health_check(manifest)
@@ -535,6 +562,18 @@ def main() -> None:
                 ready_tasks = []
 
         if not ready_tasks:
+            # Attempt to auto-seed the next scene if we're not done
+            # Load basic state needed for seeding decision
+            try:
+                ws_seed = safe_read_json(STATE_FILE, {})
+                arc_seed = safe_read_json(ARC_FILE, seed_arc_ledger(manifest))
+                char_seed = safe_read_json(CHAR_BIBLE_FILE, seed_character_bible(ws_seed))
+                
+                if seed_next_scene_task_if_needed(manifest, ws_seed, arc_seed, char_seed):
+                    continue
+            except Exception as e:
+                print(f"   ⚠️ Auto-seed check failed: {e}")
+
             print("   ...Syncing database to check for new work...")
             force_sync()
             time.sleep(LOCAL_BREATH_SECONDS)
@@ -850,7 +889,7 @@ Return ONLY the scene prose (no tags, no commentary).
         
         while True:
             attempts += 1
-            review = critique_scene(draft, story_context=story_context)
+            review = critique_scene(draft, story_context=story_context, scene_count=len(scene_history))
             # Safely extract scores with fallback to 50 (not 0) if None/invalid
             def safe_score(val, default=50):
                 if val is None:
@@ -1159,6 +1198,7 @@ def main():
         if os.path.exists(project_path):
             print(f"📂 Switching context to: {project_path}")
             os.chdir(project_path)
+            setup_project_paths(project_path)
             if os.path.exists("story.db"):
                 print(f"   (Found story.db)")
         else:
@@ -1203,6 +1243,7 @@ def main():
                 target_path = os.path.join(projects_dir, selected)
                 print(f"📂 Switching context to: {target_path}")
                 os.chdir(target_path)
+                setup_project_paths(target_path)
             else:
                 print("❌ Invalid selection.")
                 sys.exit(1)

@@ -963,16 +963,19 @@ def page_logs():
             st.info("Starting agent... Output will appear in terminal.")
             
             # Get the current working directory for the command
-            cwd = os.path.abspath(".")
+            cwd = os.path.abspath(".").replace("\\", "/")
             active_project = st.session_state.get('active_project_path', None)
             
-            st.warning("⚠️ Streamlit doesn't support long-running subprocesses. Run in a **separate terminal**:")
+            st.warning("⚠️ Streamlit doesn't support long-running sub-processes well. Run this in a **Terminal**:")
             
             # Show one-liner that can be copy-pasted
+            python_cmd = "python3" # Default to python3 for WSL/Linux which is likely where the user is
             if active_project:
-                cmd = f'cd "{cwd}" && python novelist.py --project "{active_project}"'
+                # Normalize active project path too
+                active_project = active_project.replace("\\", "/")
+                cmd = f'cd "{cwd}" && {python_cmd} novelist.py --project "{active_project}"'
             else:
-                cmd = f'cd "{cwd}" && python novelist.py'
+                cmd = f'cd "{cwd}" && {python_cmd} novelist.py'
             
             st.code(cmd, language="bash")
             st.caption(f"📂 Working directory: `{cwd}`")

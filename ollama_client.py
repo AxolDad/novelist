@@ -144,7 +144,10 @@ def _call_ollama_local(
     if json_mode:
         payload["format"] = "json"
 
+    # print(f"DEBUG: Sending to {OLLAMA_URL} | Model: {repr(payload['model'])}")
     response = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_HTTP_TIMEOUT)
+    if response.status_code != 200:
+        print(f"❌ API Error Details: {response.text}")
     response.raise_for_status()
     content = response.json()['message']['content']
 

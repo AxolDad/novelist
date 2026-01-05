@@ -32,16 +32,82 @@
 - **Real-Time Monitoring**: Watch your story grow with a Streamlit-based dashboard.
 - **Structure Visualization**: Track word counts, arc progression, and character status visually.
 - **Project Management**: Create and switch between multiple story projects seamlessly.
+- **Log Control**: Real-time agent logs and control directly from the browser.
+
+### 🖼️ Visuals
+
+<p align="center">
+  <img src="screenshots/home.png" width="700" alt="Novelist Dashboard Home">
+  <br><em>The Mission Control Dashboard</em>
+</p>
+
+<p align="center">
+  <img src="screenshots/story_setup.png" width="700" alt="Story Configuration">
+  <br><em>Comprehensive Story Setup</em>
+</p>
+
+<p align="center">
+  <img src="screenshots/terminal.png" width="700" alt="Agent Terminal Output">
+  <br><em>The Agent Reasoning in Real-Time</em>
+</p>
 
 ---
 
 ## 🚀 Getting Started
 
+## 💻 System Requirements
+
+**Option A: Cloud Intelligence (Recommended for most users)**
+
+- **Machine**: Any standard laptop/desktop (Windows, Mac, Linux).
+- **RAM**: 8GB+
+- **Backend**: Uses APIs (OpenAI, DeepSeek, Anthropic, etc.). Fast and lightweight.
+
+**Option B: Local Intelligence (For high-end workstations)**
+
+- **Machine**: High-performance PC or Mac (M-series).
+- **RAM**: 32GB+ System RAM.
+- **GPU**: NVIDIA RTX 3060 (12GB VRAM) or better.
+- **Backend**: Runs Ollama locally. Total privacy, but requires heavy hardware.
+- _Dev Note: This system was developed on a high-end rig with 64GB RAM and RTX 4090 to support local 32B parameter models._
+
+### ⚠️ WSL Users: Important Ollama Setup
+
+If you run the agent from **WSL** (Windows Subsystem for Linux) but want to use **Windows Ollama with CUDA/GPU acceleration**, you must configure it correctly:
+
+1. **Run Ollama on Windows only.** Do NOT install or run `ollama serve` inside WSL—this will load models onto your CPU instead of GPU.
+
+2. **Start Ollama with all-interfaces binding:**
+
+   ```powershell
+   # In Windows PowerShell (Admin)
+   $env:OLLAMA_HOST="0.0.0.0:11434"; ollama serve
+   ```
+
+3. **Add a Windows Firewall rule** (one-time):
+
+   ```powershell
+   netsh advfirewall firewall add rule name="Ollama WSL Access" dir=in action=allow protocol=TCP localport=11434
+   ```
+
+4. **Find your Windows host IP from WSL:**
+
+   ```bash
+   ip route | grep default | awk '{print $3}'
+   ```
+
+5. **Update your `.env` file** with the Windows IP:
+   ```env
+   OLLAMA_BASE_URL=http://<YOUR_WINDOWS_IP>:11434
+   ```
+
+> **Why?** WSL2 runs in a virtual network. `localhost` inside WSL does not automatically reach Windows. You must use the Windows host IP to ensure requests hit the GPU-enabled Windows Ollama instance.
+
 ### Prerequisites
 
 - **Python 3.10+**
 - **LLM backend** (Choose one):
-  - **Local (Ollama):** Free, private. Requires [Ollama](https://ollama.ai) installed locally.
+  - **Local (Ollama):** Free, private. Requires [Ollama](https://ollama.ai) installed on **Windows** (for CUDA support).
   - **Cloud (BYOK):** Fast, powerful. Requires an API Key (OpenAI, Groq, Together, etc.).
 
 ### Installation

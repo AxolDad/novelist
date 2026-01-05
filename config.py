@@ -25,13 +25,13 @@ os.environ["BD_DIRECT"] = "1"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
 
 # Model names (Split Brain Architecture)
-WRITER_MODEL = os.getenv("WRITER_MODEL", "huihui_ai/deepseek-r1-abliterated:32b")
-CRITIC_MODEL = os.getenv("CRITIC_MODEL", "hf.co/DavidAU/L3.2-Rogue-Creative-Instruct-Uncensored-Abliterated-7B-GGUF:Q8_0")
+WRITER_MODEL = os.getenv("WRITER_MODEL", "huihui_ai/deepseek-r1-abliterated:32b").strip()
+CRITIC_MODEL = os.getenv("CRITIC_MODEL", "hf.co/DavidAU/L3.2-Rogue-Creative-Instruct-Uncensored-Abliterated-7B-GGUF:Q8_0").strip()
 
 # ------------------------------------------------------------------
 #  OLLAMA CONFIGURATION (Local)
 # ------------------------------------------------------------------
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip('/')
 OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/chat"
 OLLAMA_TAGS_URL = f"{OLLAMA_BASE_URL}/api/tags"
 

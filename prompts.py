@@ -82,15 +82,38 @@ OUTPUT FORMAT (JSON ONLY):
 }
 """
 
+# Early-story Arc Critic prompt (for scenes 3-5)
+ARC_CRITIC_EARLY_PROMPT = """
+ROLE: You are the ARC CRITIC. This is an EARLY scene in the story.
+IGNORE continuity checks (there's not enough history yet). Focus on FOUNDATION.
+
+CRITERIA:
+1. STAKES: Does this scene establish clear stakes or consequences?
+2. HOOKS: Does this scene raise questions that make the reader want to continue?
+3. PROGRESSION: What IRREVERSIBLE change happens? If nothing changes, the scene fails.
+
+OUTPUT FORMAT (JSON ONLY):
+{
+  "arc_score": <int 0-100>,
+  "arc_fix": "Describe what's missing. Example: 'Add a clear consequence or decision that commits the character.'",
+  "irreversible_change": "Briefly state the permanent change. If none, write 'NONE'."
+}
+"""
+
 
 # ------------------------------------------------------------------
 #  PARALLEL TRIBUNAL ENGINE
 # ------------------------------------------------------------------
 
-def critique_scene(text: str, story_context: Optional[str] = None) -> Dict[str, Any]:
+def critique_scene(text: str, story_context: Optional[str] = None, scene_count: int = 0) -> Dict[str, Any]:
     """
     Runs the 3-Reviewer Tribunal in PARALLEL.
     Aggregates results from Prose, Redundancy, and Arc critics.
+    
+    Args:
+        text: The scene text to critique
+        story_context: Previous scene summaries for continuity checking
+        scene_count: Number of scenes written so far (0 = first scene)
     """
     from config import CRITIC_MODEL
     import concurrent.futures
@@ -101,25 +124,53 @@ def critique_scene(text: str, story_context: Optional[str] = None) -> Dict[str, 
             {"role": "system", "content": PROSE_CRITIC_PROMPT},
             {"role": "user", "content": f"SCENE:\n{text}"}
         ], model=CRITIC_MODEL, json_mode=True)
-        return extract_clean_json(out) or {"prose_score": 50, "prose_fix": "Prose review failed."}
+        data = extract_clean_json(out)
+        if not data:
+            print(f"   ❌ Prose Critic JSON Failed. Raw Output:\n{out}")
+            return {"prose_score": 50, "prose_fix": "Prose review failed."}
+        return data
 
     def run_redundancy():
         out = call_ollama([
             {"role": "system", "content": REDUNDANCY_CRITIC_PROMPT},
             {"role": "user", "content": f"SCENE:\n{text}"}
         ], model=CRITIC_MODEL, json_mode=True)
-        return extract_clean_json(out) or {"redundancy_score": 50, "redundancy_fix": "Redundancy review failed."}
+        data = extract_clean_json(out)
+        if not data:
+            print(f"   ❌ Redundancy Critic JSON Failed. Raw Output:\n{out}")
+            return {"redundancy_score": 50, "redundancy_fix": "Redundancy review failed."}
+        return data
 
     def run_arc():
+        # Early-story behavior: Skip for first 2 scenes, modified prompt for scenes 3-5
+        if scene_count < 2:
+            # First 2 scenes: Skip Arc Critic entirely, return passing score
+            return {
+                "arc_score": 95,  # Passing score (avoids triggering rewrites)
+                "arc_fix": "Arc review skipped (early story - no continuity context yet).",
+                "irreversible_change": "N/A (early story)"
+            }
+        elif scene_count < 5:
+            # Scenes 3-5: Use early-story prompt focused on stakes rather than continuity
+            arc_prompt = ARC_CRITIC_EARLY_PROMPT
+        else:
+            # Scene 6+: Full Arc Critic with continuity checks
+            arc_prompt = ARC_CRITIC_PROMPT
+            
         context_block = f"STORY CONTEXT:\n{story_context}\n\n" if story_context else ""
         out = call_ollama([
-            {"role": "system", "content": ARC_CRITIC_PROMPT},
+            {"role": "system", "content": arc_prompt},
             {"role": "user", "content": f"{context_block}SCENE:\n{text}"}
         ], model=CRITIC_MODEL, json_mode=True)
-        return extract_clean_json(out) or {"arc_score": 50, "arc_fix": "Arc review failed.", "irreversible_change": "UNKNOWN"}
+        data = extract_clean_json(out)
+        if not data:
+            print(f"   ❌ Arc Critic JSON Failed. Raw Output:\n{out}")
+            return {"arc_score": 50, "arc_fix": "Arc review failed.", "irreversible_change": "UNKNOWN"}
+        return data
 
     # 2. Execute in parallel
-    print("\n   ⚖️  Summoning Parallel Tribunal (3 Agents)...")
+    arc_mode = "Skipped" if scene_count < 2 else ("Stakes" if scene_count < 5 else "Full")
+    print(f"\n   ⚖️  Summoning Parallel Tribunal (3 Agents)... [Arc: {arc_mode}]")
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         future_prose = executor.submit(run_prose)
