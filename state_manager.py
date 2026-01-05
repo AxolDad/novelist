@@ -8,6 +8,7 @@ Replaces legacy JSON file operations with SQLite transactions.
 import json
 import re
 import os
+import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 import db_manager as db
