@@ -1,0 +1,28 @@
+# Secrets
+.env
+.env.local
+
+# Project Data
+projects/
+story.db
+*.bak
+*.json
+logs/
+outputs/
+meta/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
