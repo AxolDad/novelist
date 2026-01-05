@@ -1,6 +1,55 @@
+[server]
+enableStaticServing = true  # This lets Streamlit serve your custom fonts
+
+# Define your custom font families
+[[theme.fontFaces]]
+family = "SpaceGrotesk"  # Main body font - clean, modern sans-serif
+url = "app/static/SpaceGrotesk-VariableFont_wght.ttf"
+
+[[theme.fontFaces]]
+family = "SpaceGroteskHeader"  # Headers get their own weight (using variable font)
+url = "app/static/SpaceGrotesk-VariableFont_wght.ttf"
+weight = 600
+
+[[theme.fontFaces]]
+family = "SpaceMono"  # Code font - monospace for readability
+url = "app/static/SpaceMono-Bold.ttf"
+style = "normal"
+weight = 700
+
+[[theme.fontFaces]]
+family = "SpaceMono"
+url = "app/static/SpaceMono-BoldItalic.ttf"
+style = "italic"
+weight = 700
+
+[[theme.fontFaces]]
+family = "SpaceMono"
+url = "app/static/SpaceMono-Italic.ttf"
+style = "italic"
+weight = 400
+
+[[theme.fontFaces]]
+family = "SpaceMono"
+url = "app/static/SpaceMono-Regular.ttf"
+style = "normal"
+weight = 400
+
 [theme]
-base="light"
-primaryColor="#4CAF50"
-backgroundColor="#FFFFFF"
-secondaryBackgroundColor="#F0F2F6"
-textColor="#262730"
+primaryColor = "#bb5a38"           # Warm, professional accent color
+backgroundColor = "#f4f3ed"        # Soft cream background - easy on the eyes
+secondaryBackgroundColor = "#ecebe3"  # Subtle contrast for cards/sections
+textColor = "#3d3a2a"             # Dark brown - readable but not harsh black
+linkColor = "#3d3a2a"             # Keep links consistent with text
+borderColor = "#d3d2ca"           # Gentle borders that define
+showWidgetBorder = true           # Clean widget definition
+baseRadius = "0.6rem"             # Subtle rounded corners - modern feel
+font = "SpaceGrotesk"             # Apply your custom font to body text
+headingFont = "SpaceGroteskHeader" # Headers get the semibold treatment
+codeFont = "SpaceMono"            # Monospace for code blocks
+codeBackgroundColor = "#ecebe4"   # Code gets subtle background highlight
+showSidebarBorder = true          # Clean sidebar separation
+
+[theme.sidebar]
+backgroundColor = "#e8e7dd"        # Sidebar slightly darker than main
+secondaryBackgroundColor = "#ecebe3"
