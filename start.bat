@@ -17,7 +17,7 @@ if exist world_state.json (
 
 :: 2. Launch Dashboard (New Window)
 echo 📊 Starting Dashboard (Browser)...
-start "Novelist Dashboard" streamlit run dashboard.py
+start "Novelist Dashboard" python -m streamlit run dashboard.py
 
 :: 3. Launch Agent (This Window)
 echo 🤖 Startup complete. 

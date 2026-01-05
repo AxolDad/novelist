@@ -7,6 +7,10 @@ Handles all interaction with the Beads issue tracking system including:
 - Parsing status output
 """
 
+import re
+import json
+from typing import Optional, Dict, Any, List
+
 def extract_json_from_mixed_output(text: str) -> Optional[Dict[str, Any]]:
     """Extract JSON object from text that might contain headers/logs."""
     if not text:
