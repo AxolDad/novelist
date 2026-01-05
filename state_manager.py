@@ -44,10 +44,14 @@ def compute_current_word_count(manifest: Optional[Dict[str, Any]] = None, manusc
     """Computes total word count from DB scenes."""
     # We ignore file scanning now and trust the DB, 
     # but we can fallback or sync if needed. For now, DB sum:
-    with db.get_db() as conn:
-        row = conn.execute("SELECT sum(word_count) as total FROM scenes").fetchone()
-        if row and row["total"] is not None:
-            return int(row["total"])
+    try:
+        with db.get_db() as conn:
+            row = conn.execute("SELECT sum(word_count) as total FROM scenes").fetchone()
+            if row and row["total"] is not None:
+                return int(row["total"])
+    except sqlite3.OperationalError:
+        # Table might not exist yet if project is brand new or not initialized
+        pass
             
     # Fallback to legacy file scan if DB empty (e.g. initial migration with no word counts)
     total = 0
