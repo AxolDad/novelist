@@ -267,10 +267,39 @@ OUTPUT JSON:
             
         c = current_bible[name]
         
-        # Merge lists
-        bm = (c.get("behavioral_markers") or []) + (upd.get("behavioral_markers_add") or [])
-        vn = (c.get("voice_notes") or []) + (upd.get("voice_notes_add") or [])
-        hl = (c.get("hard_limits") or []) + (upd.get("hard_limits_add") or [])
+        # Helper to ensure value is a list (handles JSON strings, plain strings, lists, None)
+        def ensure_list(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                # Try to parse as JSON (might be a JSON-encoded list or dict)
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        # If it's a profile dict with voice_notes inside, extract it
+                        if "voice_notes" in parsed:
+                            return ensure_list(parsed.get("voice_notes"))
+                        if "behavioral_markers" in parsed:
+                            return ensure_list(parsed.get("behavioral_markers"))
+                        if "hard_limits" in parsed:
+                            return ensure_list(parsed.get("hard_limits"))
+                        return []
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                # Not JSON, treat as single-item list if non-empty
+                if val.strip():
+                    return [val.strip()]
+                return []
+            return []
+        
+        # Merge lists with type coercion
+        bm = ensure_list(c.get("behavioral_markers")) + ensure_list(upd.get("behavioral_markers_add"))
+        vn = ensure_list(c.get("voice_notes")) + ensure_list(upd.get("voice_notes_add"))
+        hl = ensure_list(c.get("hard_limits")) + ensure_list(upd.get("hard_limits_add"))
         
         # Dedupe
         def dd(lst): return list(dict.fromkeys([str(x).strip() for x in lst if str(x).strip()]))
