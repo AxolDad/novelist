@@ -121,6 +121,60 @@ from story_architect import (
     extract_scene_delta,
 )
 
+# ------------------------------------------------------------------
+#  HUMAN-IN-THE-LOOP TIMEOUT
+# ------------------------------------------------------------------
+HUMAN_REVIEW_TIMEOUT = int(os.getenv("HUMAN_REVIEW_TIMEOUT", "300"))  # 5 minutes default
+
+def input_with_timeout(prompt: str, timeout_seconds: int = HUMAN_REVIEW_TIMEOUT) -> Optional[str]:
+    """
+    Get user input with timeout. Returns None if timeout occurs.
+    Works on Windows (no select.select on stdin).
+    """
+    import threading
+    result = [None]
+    input_received = threading.Event()
+    
+    def get_input():
+        try:
+            result[0] = input(prompt)
+            input_received.set()
+        except EOFError:
+            result[0] = ""
+            input_received.set()
+    
+    thread = threading.Thread(target=get_input, daemon=True)
+    thread.start()
+    
+    # Wait for either input or timeout
+    got_input = input_received.wait(timeout=timeout_seconds)
+    
+    if not got_input:
+        return None  # Timeout
+    return result[0]
+
+
+def generate_ai_chapter_review(manuscript_path: str) -> str:
+    """Generate an AI review of the chapter when human doesn't respond."""
+    try:
+        with open(manuscript_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # Get last ~4000 chars (roughly the recent chapter)
+        excerpt = content[-4000:] if len(content) > 4000 else content
+        
+        prompt = f"""Review this chapter excerpt briefly. Note 1-2 strengths and 1-2 areas for improvement.
+Be concise (3-4 sentences max).
+
+EXCERPT:
+{excerpt}
+
+OUTPUT: Brief review in plain text."""
+        
+        review = call_ollama([{"role": "user", "content": prompt}], model=CRITIC_MODEL)
+        return review or "Auto-review unavailable. Continuing..."
+    except Exception as e:
+        return f"Auto-review skipped: {e}"
+
 
 def generate_parallel_drafts(system_context: str, user_prompt: str) -> Optional[str]:
     """Generates 3 drafts with different temperatures and selects the best one."""
@@ -1162,11 +1216,19 @@ OUTPUT FORMAT:
             print(f"\n📊 Progress: {word_count:,} / {target_words:,} words ({progress_pct:.1f}%)")
             print(f"📄 Manuscript: {manuscript_path}")
             print(f"\n💡 Review the chapter and provide feedback to improve quality.")
-            print("   Press ENTER to continue, or type 'pause' to stop for detailed review.\n")
+            print(f"   Press ENTER to continue, or type 'pause' to stop for detailed review.")
+            print(f"   (Auto-continuing in {HUMAN_REVIEW_TIMEOUT // 60} minutes if no response)\n")
             
             try:
-                user_input = input("   > ").strip().lower()
-                if user_input in ('pause', 'stop', 'review', 'p', 's', 'r'):
+                user_input = input_with_timeout("   > ", HUMAN_REVIEW_TIMEOUT)
+                
+                if user_input is None:
+                    # Timeout occurred - generate AI review and continue
+                    print("\n   ⏰ No response received. Generating AI review...")
+                    ai_review = generate_ai_chapter_review(manuscript_path)
+                    print(f"\n   🤖 AUTO-REVIEW:\n   {ai_review}\n")
+                    print("   ▶️  Auto-continuing to next chapter...")
+                elif user_input.strip().lower() in ('pause', 'stop', 'review', 'p', 's', 'r'):
                     print("\n⏸️  Pausing for human review.")
                     print(f"   Review manuscript at: {manuscript_path}")
                     print("   Make any edits directly, then restart the agent to continue.")
@@ -1174,9 +1236,6 @@ OUTPUT FORMAT:
                     break  # Exit the main loop for review
                 else:
                     print("   ▶️  Continuing to next chapter...")
-            except EOFError:
-                # Non-interactive mode, continue automatically
-                print("   ▶️  Non-interactive mode, continuing...")
             except KeyboardInterrupt:
                 print("\n⏹️  Interrupted by user. Exiting...")
                 break
