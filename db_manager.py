@@ -214,4 +214,139 @@ def get_recent_scene_history(limit: int = 5) -> List[Dict[str, Any]]:
                 "characters": json.loads(r["characters_present"] or "[]"),
                 "scores": json.loads(r["tribunal_scores"] or "{}")
             })
-        return history[::-1] 
+        return history[::-1]
+
+
+# ------------------------------------------------------------------
+#  HIGH-LEVEL STATE ACCESSORS (Single Source of Truth)
+# ------------------------------------------------------------------
+
+def get_world_state() -> Dict[str, Any]:
+    """Get the complete world state from DB."""
+    return get_kv("world_state", {})
+
+def set_world_state(state: Dict[str, Any]):
+    """Set the complete world state in DB."""
+    set_kv("world_state", state)
+
+def get_arc_ledger() -> Dict[str, Any]:
+    """Get arc ledger from DB."""
+    ledger = get_kv("arc_ledger", {})
+    # Ensure proper structure
+    if not isinstance(ledger, dict):
+        ledger = {}
+    ledger.setdefault("scene_history", [])
+    ledger.setdefault("active_stakes", [])
+    ledger.setdefault("narrative_promises", [])
+    ledger.setdefault("open_questions", [])
+    ledger.setdefault("tension_threads", {})
+    return ledger
+
+def set_arc_ledger(ledger: Dict[str, Any]):
+    """Set arc ledger in DB."""
+    set_kv("arc_ledger", ledger)
+
+def get_progress() -> Dict[str, Any]:
+    """Get progress ledger from DB."""
+    return get_kv("progress", {"next_scene_index": 1})
+
+def set_progress(progress: Dict[str, Any]):
+    """Set progress ledger in DB."""
+    set_kv("progress", progress)
+
+def get_macro_outline() -> Dict[str, Any]:
+    """Get macro outline from DB."""
+    return get_kv("macro_outline", {})
+
+def set_macro_outline(outline: Dict[str, Any]):
+    """Set macro outline in DB."""
+    set_kv("macro_outline", outline)
+
+def get_character_bible() -> Dict[str, Any]:
+    """Get character bible (wrapper for get_all_characters)."""
+    return {"characters": get_all_characters()}
+
+def set_character_bible(bible: Dict[str, Any]):
+    """Set character bible (upserts all characters)."""
+    chars = bible.get("characters", bible)  # Handle both formats
+    for name, profile in chars.items():
+        upsert_character(name, profile)
+
+
+# ------------------------------------------------------------------
+#  JSON EXPORT/IMPORT (For debugging and manual editing)
+# ------------------------------------------------------------------
+
+def export_state_to_json(base_path: str):
+    """Export all DB state to JSON files for debugging."""
+    import os
+    
+    # Create paths
+    os.makedirs(base_path, exist_ok=True)
+    
+    exports = {
+        "world_state.json": get_world_state(),
+        "arc_ledger.json": get_arc_ledger(),
+        "character_bible.json": get_character_bible(),
+        os.path.join("meta", "progress_ledger.json"): get_progress(),
+        os.path.join("meta", "macro_outline.json"): get_macro_outline(),
+    }
+    
+    for filename, data in exports.items():
+        filepath = os.path.join(base_path, filename)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    
+    print(f"   📤 Exported state to {base_path}")
+
+def import_state_from_json(base_path: str):
+    """Import state from JSON files into DB (for startup sync)."""
+    import os
+    
+    def load_if_exists(filepath):
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return None
+    
+    # World state
+    ws = load_if_exists(os.path.join(base_path, "world_state.json"))
+    if ws:
+        set_world_state(ws)
+    
+    # Arc ledger
+    arc = load_if_exists(os.path.join(base_path, "arc_ledger.json"))
+    if arc:
+        set_arc_ledger(arc)
+    
+    # Character bible
+    chars = load_if_exists(os.path.join(base_path, "character_bible.json"))
+    if chars:
+        set_character_bible(chars)
+    
+    # Progress
+    prog = load_if_exists(os.path.join(base_path, "meta", "progress_ledger.json"))
+    if prog:
+        set_progress(prog)
+    
+    # Macro outline
+    outline = load_if_exists(os.path.join(base_path, "meta", "macro_outline.json"))
+    if outline:
+        set_macro_outline(outline)
+    
+    print(f"   📥 Imported state from {base_path}")
+
+
+def get_scene_count() -> int:
+    """Get total number of scenes in DB."""
+    with get_db() as conn:
+        row = conn.execute("SELECT COUNT(*) as cnt FROM scenes").fetchone()
+        return row["cnt"] if row else 0
+
+def get_total_word_count() -> int:
+    """Get total word count from all scenes in DB."""
+    with get_db() as conn:
+        row = conn.execute("SELECT SUM(word_count) as total FROM scenes").fetchone()
+        return row["total"] or 0 if row else 0
+

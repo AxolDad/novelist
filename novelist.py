@@ -383,14 +383,22 @@ def init_project() -> None:
         manifest = json.load(f)
 
     if not os.path.exists(STATE_FILE):
-        safe_write_json(STATE_FILE, manifest.get('world_state', {}))
+        import db_manager as db
+        db.set_world_state(manifest.get('world_state', {}))
+        safe_write_json(STATE_FILE, manifest.get('world_state', {}))  # Keep JSON as backup
 
     if not os.path.exists(ARC_FILE):
-        safe_write_json(ARC_FILE, seed_arc_ledger(manifest))
+        import db_manager as db
+        arc_data = seed_arc_ledger(manifest)
+        db.set_arc_ledger(arc_data)
+        safe_write_json(ARC_FILE, arc_data)  # Keep JSON as backup
 
     if not os.path.exists(CHAR_BIBLE_FILE):
+        import db_manager as db
         ws = safe_read_json(STATE_FILE, {})
-        safe_write_json(CHAR_BIBLE_FILE, seed_character_bible(ws))
+        char_data = seed_character_bible(ws)
+        db.set_character_bible(char_data)
+        safe_write_json(CHAR_BIBLE_FILE, char_data)  # Keep JSON as backup
 
     # Seed styles master if missing
     if not os.path.exists(STYLES_MASTER_FILE):
@@ -540,12 +548,13 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
         print(f"\n🎬 ACTION: {title} (ID: {task_id})")
         time.sleep(LOCAL_BREATH_SECONDS)
 
-        # Load state / ledgers
-        world_state = safe_read_json(STATE_FILE, {})
-        manifest = safe_read_json(MANIFEST_FILE, {})
-        arc_ledger = safe_read_json(ARC_FILE, seed_arc_ledger(manifest))
+        # Load state / ledgers from DB (Single Source of Truth)
+        import db_manager as db
+        world_state = db.get_world_state() or safe_read_json(STATE_FILE, {})
+        manifest = safe_read_json(MANIFEST_FILE, {})  # Manifest stays in JSON (user-edited)
+        arc_ledger = db.get_arc_ledger() or seed_arc_ledger(manifest)
         arc_ledger = ensure_arc_ledger_schema(arc_ledger, manifest)
-        char_bible = safe_read_json(CHAR_BIBLE_FILE, seed_character_bible(world_state))
+        char_bible = db.get_character_bible() or seed_character_bible(world_state)
 
         # Load checkpoint if exists (crash-resume)
         ckpt = load_checkpoint(task_id) or {}
@@ -982,7 +991,9 @@ OUTPUT FORMAT:
                                 world_state["characters"][cname].update(cinfo)
                         world_state[k] = v
 
-                safe_write_json(STATE_FILE, world_state)
+                # Save to DB (Single Source of Truth)
+                db.set_world_state(world_state)
+                safe_write_json(STATE_FILE, world_state)  # Keep JSON as backup
                 print("🌍 World State Updated.")
             except Exception:
                 pass
