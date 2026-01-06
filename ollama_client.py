@@ -26,7 +26,16 @@ from config import (
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     WRITER_MODEL,
+    OLLAMA_CHECK_TIMEOUT,
+    DEFAULT_NUM_CTX,
+    CONTEXT_RESERVE_TOKENS,
+    CONTEXT_MIN_BUDGET_TOKENS,
+    TOKEN_EST_CHARS_PER_TOKEN,
+    WRITER_TEMP_DEFAULT,
+    CRITIC_TEMP_DEFAULT,
+    CONTEXT_SLASH_RATIO
 )
+from logger import logger
 
 
 def extract_clean_json(text: str) -> Optional[Dict[str, Any]]:
@@ -116,7 +125,7 @@ def check_ollama_connection() -> bool:
         # For commercial APIs, just check if API key is set
         return bool(OPENAI_API_KEY)
     try:
-        r = requests.get(OLLAMA_TAGS_URL, timeout=(5, 10))
+        r = requests.get(OLLAMA_TAGS_URL, timeout=OLLAMA_CHECK_TIMEOUT)
         return r.status_code == 200
     except Exception:
         return False
@@ -144,10 +153,10 @@ def _call_ollama_local(
     if json_mode:
         payload["format"] = "json"
 
-    # print(f"DEBUG: Sending to {OLLAMA_URL} | Model: {repr(payload['model'])}")
+    # logger.debug(f"Sending to {OLLAMA_URL} | Model: {repr(payload['model'])}")
     response = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_HTTP_TIMEOUT)
     if response.status_code != 200:
-        print(f"❌ API Error Details: {response.text}")
+        logger.error(f"API Error Details: {response.text}")
     response.raise_for_status()
     content = response.json()['message']['content']
 
@@ -156,6 +165,9 @@ def _call_ollama_local(
         think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL | re.IGNORECASE)
         if think_match:
             snippet = think_match.group(1).strip()
+            # Still using visible output here as it's a deliberate user-facing feature
+            # But logging it as DEBUG
+            logger.debug(f"WRITER THINKING snippet: {snippet[:200]}...")
             print(f"\n\033[93m💭 WRITER THINKING (snippet):\n{snippet[:500]}...\033[0m\n")
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
 
@@ -204,7 +216,7 @@ def estimate_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    return int(len(text) / 3.5)
+    return int(len(text) / TOKEN_EST_CHARS_PER_TOKEN)
 
 
 def truncate_middle(text: str, max_chars: int) -> str:
@@ -228,11 +240,10 @@ def enforce_context_safety(messages: List[Dict[str, str]], max_ctx: int = 30000)
     total_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
     
     # If safe, return as is (leave room for generation)
-    # create a buffer of 2k tokens for output
-    if total_tokens < (max_ctx - 2000):
+    if total_tokens < (max_ctx - CONTEXT_RESERVE_TOKENS):
         return messages
         
-    print(f"⚠️ CONTEXT WARNING: {total_tokens} tokens > limit {max_ctx}. Truncating...")
+    logger.warning(f"CONTEXT WARNING: {total_tokens} tokens > limit {max_ctx}. Truncating...")
     
     # Calculate budget
     # System prompt: keep full
@@ -259,11 +270,11 @@ def enforce_context_safety(messages: List[Dict[str, str]], max_ctx: int = 30000)
         reserved_tokens += estimate_tokens(safe_messages[last_idx]["content"])
         
     # Remaining budget for middle content
-    available_tokens = (max_ctx - 2000) - reserved_tokens
-    if available_tokens < 1000:
+    available_tokens = (max_ctx - CONTEXT_RESERVE_TOKENS) - reserved_tokens
+    if available_tokens < CONTEXT_MIN_BUDGET_TOKENS:
         # Extreme case: System + Last msg are huge. Truncate last message too.
-        print("   🚨 Extreme context pressure. Truncating current instruction.")
-        avail_chars = int(10000 * 3.5) # Hard cap 10k context
+        logger.warning("Extreme context pressure. Truncating current instruction.")
+        avail_chars = int(10000 * TOKEN_EST_CHARS_PER_TOKEN) # Hard cap 10k context
         if last_idx >= 0:
             safe_messages[last_idx]["content"] = truncate_middle(safe_messages[last_idx]["content"], avail_chars)
         return safe_messages
@@ -275,10 +286,9 @@ def enforce_context_safety(messages: List[Dict[str, str]], max_ctx: int = 30000)
             continue
             
         content = m.get("content", "")
-        # Heuristic: Cut middle content in half until it fits
-        # A proper implementation would distribute efficiently, but this is a safety net
+        # Heuristic: Cut middle content proportionally
         current_len = len(content)
-        target_len = int(current_len * 0.7) # Slash by 30%
+        target_len = int(current_len * CONTEXT_SLASH_RATIO)
         safe_messages[i]["content"] = truncate_middle(content, target_len)
     
     return safe_messages
@@ -288,7 +298,7 @@ def call_ollama(
     messages: List[Dict[str, str]],
     model: str = WRITER_MODEL,
     json_mode: bool = False,
-    num_ctx: int = 32768,
+    num_ctx: int = DEFAULT_NUM_CTX,
     num_predict: Optional[int] = None,
     temperature: Optional[float] = None
 ) -> Optional[str]:
@@ -302,7 +312,7 @@ def call_ollama(
     if temperature is not None:
         temp = temperature
     else:
-        temp = 0.85 if model == WRITER_MODEL else 0.3
+        temp = WRITER_TEMP_DEFAULT if model == WRITER_MODEL else CRITIC_TEMP_DEFAULT
 
     last_err = None
     for attempt in range(1, OLLAMA_MAX_RETRIES + 1):
@@ -314,10 +324,9 @@ def call_ollama(
 
         except Exception as e:
             last_err = e
-            print(f"❌ API Error (Attempt {attempt}/{OLLAMA_MAX_RETRIES}): {e}")
+            logger.error(f"API Error (Attempt {attempt}/{OLLAMA_MAX_RETRIES}): {e}")
             if attempt < OLLAMA_MAX_RETRIES:
                 backoff = (OLLAMA_RETRY_BACKOFF_BASE ** (attempt - 1)) + OLLAMA_RETRY_JITTER
                 time.sleep(backoff)
 
     return None
-

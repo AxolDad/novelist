@@ -7,15 +7,20 @@ Replaces legacy JSON file operations with SQLite transactions.
 
 import json
 import re
-import os
-import sqlite3
+import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import db_manager as db
+from logger import logger
 from config import (
     MANIFEST_FILE,
     STATE_EXCERPT_CHARS,
-    CRITIC_MODEL
+    CRITIC_MODEL,
+    DEFAULT_TARGET_WORD_COUNT,
+    CHAPTER_HISTORY_LIMIT,
+    MAX_DRIFT_MARKERS,
+    MAX_DRIFT_VOICE_NOTES
 )
 from file_utils import (
     safe_read_json,
@@ -38,7 +43,7 @@ def get_target_word_count(manifest: Dict[str, Any]) -> int:
             return int(style["target_word_count"])
     except Exception:
         pass
-    return 90000
+    return DEFAULT_TARGET_WORD_COUNT
 
 
 def compute_current_word_count(manifest: Optional[Dict[str, Any]] = None, manuscript_file_default: str = "") -> int:
@@ -46,11 +51,8 @@ def compute_current_word_count(manifest: Optional[Dict[str, Any]] = None, manusc
     # We ignore file scanning now and trust the DB, 
     # but we can fallback or sync if needed. For now, DB sum:
     try:
-        with db.get_db() as conn:
-            row = conn.execute("SELECT sum(word_count) as total FROM scenes").fetchone()
-            if row and row["total"] is not None:
-                return int(row["total"])
-    except sqlite3.OperationalError:
+        return db.get_total_word_count()
+    except Exception:
         # Table might not exist yet if project is brand new or not initialized
         pass
             
@@ -76,7 +78,7 @@ def seed_arc_ledger(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "promises_to_reader": db.get_active_arc_items("promise"),
         "unresolved_questions": db.get_active_arc_items("question"),
         "payoffs_delivered": [], # active items don't track delivered
-        "scene_history": db.get_recent_scene_history(5)
+        "scene_history": db.get_recent_scene_history(CHAPTER_HISTORY_LIMIT)
     }
 
 
@@ -96,10 +98,10 @@ def update_arc_ledger(
     Update arc ledger based on new scene.
     Writes updates to DB.
     """
-    # Truncate scene_history to last 5 entries for prompt efficiency
+    # Truncate scene_history for prompt efficiency
     arc_excerpt = arc_ledger.copy()
-    if "scene_history" in arc_excerpt and len(arc_excerpt["scene_history"]) > 5:
-        arc_excerpt["scene_history"] = arc_excerpt["scene_history"][-5:]
+    if "scene_history" in arc_excerpt and len(arc_excerpt["scene_history"]) > CHAPTER_HISTORY_LIMIT:
+        arc_excerpt["scene_history"] = arc_excerpt["scene_history"][-CHAPTER_HISTORY_LIMIT:]
     
     prompt = f"""
 Return JSON ONLY.
@@ -304,9 +306,9 @@ OUTPUT JSON:
         # Dedupe
         def dd(lst): return list(dict.fromkeys([str(x).strip() for x in lst if str(x).strip()]))
         
-        c["behavioral_markers"] = dd(bm)[:18]
-        c["voice_notes"] = dd(vn)[:12]
-        c["hard_limits"] = dd(hl)[:12]
+        c["behavioral_markers"] = dd(bm)[:MAX_DRIFT_MARKERS]
+        c["voice_notes"] = dd(vn)[:MAX_DRIFT_VOICE_NOTES]
+        c["hard_limits"] = dd(hl)[:MAX_DRIFT_VOICE_NOTES]
         
         # Save to DB
         # Note: 'upsert_character' expects flat fields.
@@ -398,8 +400,9 @@ def update_story_state(state_file: str, model_response: str, verbose: bool = Tru
         if k not in ["current_time", "current_location", "add_inventory", "remove_inventory"]:
              db.set_kv(k, v)
 
-    msg = f"✅ State Advanced: {', '.join(msg_parts)}"
-    if verbose: print(f"   🔄 {msg}")
+    msg = f"State Advanced: {', '.join(msg_parts)}"
+    if verbose:
+        logger.info(msg)
     return True, msg
 
 

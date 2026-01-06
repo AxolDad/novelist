@@ -20,76 +20,28 @@ from config import (
     MANIFEST_FILE, STATE_FILE, ARC_FILE, CHAR_BIBLE_FILE,
     STYLES_MASTER_FILE, MANUSCRIPT_FILE_DEFAULT, OUTPUT_DIR,
     WRITER_MODEL, CRITIC_MODEL, LLM_PROVIDER, MODEL_PRESETS,
+    DEFAULT_TARGET_WORD_COUNT,  # Import configuration constant
 )
 from file_utils import safe_read_json, safe_write_json
 from ollama_client import check_ollama_connection
 from state_manager import compute_current_word_count, get_target_word_count
 from prompts import load_styles_master
-import sqlite3
 import db_manager
-
 def get_db_data(project_path):
-    """Fetch all state from SQLite."""
-    db_path = os.path.join(project_path, "story.db")
-    if not os.path.exists(db_path):
+    """Fetch all state from SQLite via Server API."""
+    # Note: We ignore project_path here because the Server manages the active DB.
+    # To support switching, we should ideally call db_manager.set_db_path here,
+    # but that affects the whole server. For now, we assume active context.
+    
+    # Optional: Force server context switch
+    # db_path = os.path.join(project_path, "story.db")
+    # db_manager.set_db_path(db_path)
+    
+    dump = db_manager.get_full_state_dump()
+    if not dump:
         return {}, {}, {}
     
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        
-        # KV
-        kv = {}
-        try:
-            rows = conn.execute("SELECT key, value FROM kv_store").fetchall()
-            for r in rows: kv[r["key"]] = json.loads(r["value"])
-        except: pass
-        
-        # Chars
-        chars = {}
-        try:
-            rows = conn.execute("SELECT * FROM characters").fetchall()
-            for r in rows:
-                # Handle our specific hack where voice_notes stores the dict profile
-                profile = {}
-                if r["voice_notes"] and r["voice_notes"].startswith("{"):
-                    profile = json.loads(r["voice_notes"])
-                    
-                chars[r["name"]] = {
-                    "role": r["role"],
-                    "description": r["description"],
-                    "voice_notes": profile.get("voice_notes", []),
-                    "behavioral_markers": profile.get("behavioral_markers", []),
-                    "hard_limits": profile.get("hard_limits", []),
-                    "relationships": json.loads(r["relationships"] or "{}"),
-                    "current_status": json.loads(r["current_status"] or "{}")
-                }
-        except: pass
-        
-        # Arc
-        arc = {"stakes": [], "promises_to_reader": [], "unresolved_questions": [], "scene_history": []}
-        try:
-            rows = conn.execute("SELECT type, description FROM arc_items WHERE status='active'").fetchall()
-            for r in rows:
-                if r["type"] == "stake": arc["stakes"].append(r["description"])
-                elif r["type"] == "promise": arc["promises_to_reader"].append(r["description"])
-                elif r["type"] == "question": arc["unresolved_questions"].append(r["description"])
-                
-            rows = conn.execute("SELECT * FROM scenes ORDER BY id DESC LIMIT 5").fetchall()
-            for r in rows:
-                arc["scene_history"].append({
-                    "title": r["title"],
-                    "summary": r["summary"],
-                    "consequence": r["consequence"],
-                    "scores": json.loads(r["tribunal_scores"] or "{}")
-                })
-            arc["scene_history"].reverse()
-        except: pass
-        
-        conn.close()
-        return kv, chars, arc
-    except Exception as e:
-        return {}, {}, {}
+    return dump.get("kv", {}), dump.get("chars", {}), dump.get("arc", {})
 
 # Page config
 st.set_page_config(
@@ -214,7 +166,7 @@ def create_new_project(project_name: str, project_dir: str = "projects") -> Dict
         "title": project_name,
         "genre": "",
         "synopsis": "",
-        "target_word_count": 90000,
+        "target_word_count": DEFAULT_TARGET_WORD_COUNT,
         "style": {
             "activation_key": "(immersive fiction)",
             "tone": "",
@@ -252,17 +204,17 @@ def create_new_project(project_name: str, project_dir: str = "projects") -> Dict
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(content, f, indent=2)
 
-    # Initialize SQLite DB
+    # Initialize SQLite DB via Server
     project_db = os.path.join(project_path, "story.db")
+    # For creation, we explicitly tell server to init this path
     db_manager.init_db(project_db)
     
-    # Seed default state
+    # Seed default state via API
     try:
-        with sqlite3.connect(project_db) as conn:
-            conn.execute("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)", ("current_time", json.dumps("")))
-            conn.execute("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)", ("current_location", json.dumps("")))
-            conn.execute("INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)", ("inventory", json.dumps([])))
-            conn.commit()
+        # Note: init_db sets active context, so we can set_kv directly
+        db_manager.set_kv("current_time", "")
+        db_manager.set_kv("current_location", "")
+        db_manager.set_kv("inventory", [])
     except Exception as e:
         print(f"Error seeding DB: {e}")
     
@@ -687,7 +639,7 @@ def page_story_setup():
             target_wc = st.number_input(
                 "Target Word Count", 
                 min_value=1000, max_value=500000, 
-                value=manifest.get("target_word_count", 90000),
+                value=manifest.get("target_word_count", DEFAULT_TARGET_WORD_COUNT),
                 step=1000
             )
         with col2:

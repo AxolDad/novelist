@@ -10,6 +10,7 @@ from typing import Optional
 from config import WRITER_MODEL
 from ollama_client import call_ollama
 from prompts import select_best_draft
+from logger import logger
 
 
 def generate_parallel_drafts(system_context: str, user_prompt: str) -> Optional[str]:
@@ -22,7 +23,7 @@ def generate_parallel_drafts(system_context: str, user_prompt: str) -> Optional[
     # Temperatures: 0.7 (Safe), 0.9 (Creative), 1.1 (Chaotic/Innovative)
     temps = [0.7, 0.9, 1.1]
     
-    print(f"   ⚖️  Drafting 3 variants in parallel (Temps: {temps})...")
+    logger.info(f"Drafting 3 variants in parallel (Temps: {temps})...")
     
     drafts = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -42,7 +43,7 @@ def generate_parallel_drafts(system_context: str, user_prompt: str) -> Optional[
     if len(drafts) == 1:
         return drafts[0]
         
-    print(f"   🧐 Evaluating {len(drafts)} drafts via Editor-in-Chief...")
+    logger.info(f"Evaluating {len(drafts)} drafts via Editor-in-Chief...")
     selection = select_best_draft(drafts)
     idx = selection.get("best_draft_index", 1) - 1
     reason = selection.get("reasoning", "No valid reason provided.")
@@ -51,5 +52,5 @@ def generate_parallel_drafts(system_context: str, user_prompt: str) -> Optional[
     if idx < 0 or idx >= len(drafts):
         idx = 0
         
-    print(f"   🏆 Selected Draft {idx+1}: {reason[:100]}...")
+    logger.info(f"Selected Draft {idx+1}: {reason[:100]}...")
     return drafts[idx]

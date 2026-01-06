@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import WRITER_MODEL, CRITIC_MODEL
 from ollama_client import call_ollama, extract_clean_json
 from file_utils import safe_read_json, safe_write_json, tail_excerpt
+from logger import logger
 
 
 # =============================================================================
@@ -107,12 +108,12 @@ Return JSON ONLY:
 }}
 """
     
-    print("   🧠 R1 reasoning through story arc...")
+    logger.info("R1 reasoning through story arc...")
     out = call_ollama([{"role": "user", "content": prompt}], model=WRITER_MODEL, json_mode=True)
     data = extract_clean_json(out)
     
     if not data or not isinstance(data.get("scenes"), list) or len(data["scenes"]) == 0:
-        print("   ⚠️ Arc generation failed. Creating minimal structure...")
+        logger.warning("Arc generation failed. Creating minimal structure...")
         # Fallback with basic three-act structure
         data = {
             "core_tension": "Survival against the elements and inner demons",
@@ -135,7 +136,7 @@ Return JSON ONLY:
             ]
         }
     
-    print(f"   ✅ Generated arc: {data.get('chosen_endpoint', 'unknown')} ending with {len(data.get('scenes', []))} scenes")
+    logger.info(f"Generated arc: {data.get('chosen_endpoint', 'unknown')} ending with {len(data.get('scenes', []))} scenes")
     return data
 
 

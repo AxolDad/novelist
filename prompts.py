@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 from config import WRITER_MODEL, STYLES_MASTER_FILE
 from file_utils import safe_read_json, safe_write_json
 from ollama_client import call_ollama, extract_clean_json
+from prompt_loader import load_prompt
+from logger import logger
 
 
 # ------------------------------------------------------------------
@@ -25,80 +27,10 @@ from ollama_client import call_ollama, extract_clean_json
 #  SPECIALIZED CRITIC PROMPTS (Parallel Tribunal)
 # ------------------------------------------------------------------
 
-PROSE_CRITIC_PROMPT = """
-ROLE: You are the PROSE CRITIC. Your sole focus is sensory immersion and voice depth.
-IGNORE plot logic. IGNORE typos. Focus on the FEEL of the writing.
-
-CRITERIA:
-1. SENSORY: Are at least 3 senses engaged (sight, sound, smell, touch, taste)?
-2. SPECIFICITY: "cold" vs "the frozen metal handle bit into his palm".
-3. METAPHOR: Are there vivid or unexpected comparisons?
-4. VOICE: Does the narrative distance match the character's state?
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "prose_score": <int 0-100>,
-  "prose_fix": "ONE specific, actionable fix regarding sensory detail or voice. Example: 'Line 3: Replace \"he felt cold\" with \"ice needles pricked his fingers\"'"
-}
-"""
-
-REDUNDANCY_CRITIC_PROMPT = """
-ROLE: You are the REDUNDANCY CRITIC. You are a ruthless editor.
-Your goal is to ELIMINATE weak writing patterns.
-
-DETECT AND FLAG:
-1. Filter words: "he saw," "she felt," "he noticed," "she realized," "he thought"
-2. Clichés: "heart pounded," "breath caught," "time stood still," "dead silence"
-3. Redundant phrasing: "He stood up on his feet" (where else would he stand?)
-4.  adverb abuse: "shouted loudly"
-
-SCORING RUBRIC (Strict):
-- 95-100: Zero issues.
-- 90-94:  1 minor issue.
-- 80-89:  2-3 issues.
-- <80:    Significant problems.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "redundancy_score": <int 0-100>,
-  "redundancy_fix": "Quote the EXACT cliché/filter word and its line, provide rewrite. Example: 'Line 7: \"His heart pounded\" → Show behavior: \"His fist whitened on the rail\"'"
-}
-"""
-
-ARC_CRITIC_PROMPT = """
-ROLE: You are the ARC CRITIC. Your focus is narrative continuity and consequence.
-IGNORE prose style. Focus on LOGIC and CAUSALITY.
-
-CRITERIA:
-1. CONTINUITY: Does this scene follow logically from the provided summary?
-2. CONSISTENCY: Are character motivations/states consistent?
-3. PROGRESSION: What IRREVERSIBLE change happens? If nothing changes, the scene fails.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "arc_score": <int 0-100>,
-  "arc_fix": "Describe narrative gap or lack of consequence. Example: 'Scene ends where it started. Add a decision that cannot be unmade.'",
-  "irreversible_change": "Briefly state the permanent change. If none, write 'NONE'."
-}
-"""
-
-# Early-story Arc Critic prompt (for scenes 3-5)
-ARC_CRITIC_EARLY_PROMPT = """
-ROLE: You are the ARC CRITIC. This is an EARLY scene in the story.
-IGNORE continuity checks (there's not enough history yet). Focus on FOUNDATION.
-
-CRITERIA:
-1. STAKES: Does this scene establish clear stakes or consequences?
-2. HOOKS: Does this scene raise questions that make the reader want to continue?
-3. PROGRESSION: What IRREVERSIBLE change happens? If nothing changes, the scene fails.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "arc_score": <int 0-100>,
-  "arc_fix": "Describe what's missing. Example: 'Add a clear consequence or decision that commits the character.'",
-  "irreversible_change": "Briefly state the permanent change. If none, write 'NONE'."
-}
-"""
+PROSE_CRITIC_PROMPT = load_prompt("critics", "prose.md")
+REDUNDANCY_CRITIC_PROMPT = load_prompt("critics", "redundancy.md")
+ARC_CRITIC_PROMPT = load_prompt("critics", "arc.md")
+ARC_CRITIC_EARLY_PROMPT = load_prompt("critics", "arc_early.md")
 
 
 # ------------------------------------------------------------------
@@ -126,7 +58,7 @@ def critique_scene(text: str, story_context: Optional[str] = None, scene_count: 
         ], model=CRITIC_MODEL, json_mode=True)
         data = extract_clean_json(out)
         if not data:
-            print(f"   ❌ Prose Critic JSON Failed. Raw Output:\n{out}")
+            logger.error(f"Prose Critic JSON Failed. Raw Output:\n{out}")
             return {"prose_score": 50, "prose_fix": "Prose review failed."}
         return data
 
@@ -137,7 +69,7 @@ def critique_scene(text: str, story_context: Optional[str] = None, scene_count: 
         ], model=CRITIC_MODEL, json_mode=True)
         data = extract_clean_json(out)
         if not data:
-            print(f"   ❌ Redundancy Critic JSON Failed. Raw Output:\n{out}")
+            logger.error(f"Redundancy Critic JSON Failed. Raw Output:\n{out}")
             return {"redundancy_score": 50, "redundancy_fix": "Redundancy review failed."}
         return data
 
@@ -164,13 +96,13 @@ def critique_scene(text: str, story_context: Optional[str] = None, scene_count: 
         ], model=CRITIC_MODEL, json_mode=True)
         data = extract_clean_json(out)
         if not data:
-            print(f"   ❌ Arc Critic JSON Failed. Raw Output:\n{out}")
+            logger.error(f"Arc Critic JSON Failed. Raw Output:\n{out}")
             return {"arc_score": 50, "arc_fix": "Arc review failed.", "irreversible_change": "UNKNOWN"}
         return data
 
     # 2. Execute in parallel
     arc_mode = "Skipped" if scene_count < 2 else ("Stakes" if scene_count < 5 else "Full")
-    print(f"\n   ⚖️  Summoning Parallel Tribunal (3 Agents)... [Arc: {arc_mode}]")
+    logger.info(f"Summoning Parallel Tribunal (3 Agents)... [Arc: {arc_mode}]")
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         future_prose = executor.submit(run_prose)
@@ -206,21 +138,7 @@ def critique_scene(text: str, story_context: Optional[str] = None, scene_count: 
 #  DRAFT SELECTOR (Editor-in-Chief)
 # ------------------------------------------------------------------
 
-SELECTOR_PROMPT = """
-ROLE: You are the EDITOR-IN-CHIEF. You have 3 drafts of the same scene.
-Your job is to select the BEST one for publication.
-
-CRITERIA for SELECTION:
-1. VOICE: Which draft has the most specific, grounded narrative voice?
-2. SHOWING: Which draft avoids "filter words" (he saw, she felt) and uses sensory details?
-3. LOGIC: Which draft follows the prompt constraints most accurately?
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "best_draft_index": <int 1, 2, or 3>,
-  "reasoning": "Brief explanation of why this draft won."
-}
-"""
+SELECTOR_PROMPT = load_prompt("critics", "selector.md")
 
 def select_best_draft(drafts: List[str]) -> Dict[str, Any]:
     """
@@ -247,88 +165,7 @@ CANDIDATE DRAFTS:
     return extract_clean_json(out) or {"best_draft_index": 1, "reasoning": "Selection failed."}
 
 
-WRITER_FRAME_PROMPT = """
-ROLE: You are a narrative reasoning engine AND a contemporary fiction author.
-
-═══════════════════════════════════════════════════════════════════
-POV CONSTRAINT (FIX #2 - MANDATORY)
-═══════════════════════════════════════════════════════════════════
-This story is written in: {{pov}}
-- third_limited: Use "he/she/they" pronouns ONLY. NEVER use "I" or "my" or "we".
-- first_person: Use "I/my" pronouns consistently.
-- third_omniscient: Narrator may describe multiple characters' thoughts.
-
-VIOLATION = AUTOMATIC FAILURE. If the POV is third_limited, any sentence 
-starting with "I " or containing "my " (as possessive) is WRONG.
-
-═══════════════════════════════════════════════════════════════════
-CHARACTER RELATIONSHIPS (FIX #3 - DO NOT CONTRADICT)
-═══════════════════════════════════════════════════════════════════
-{{character_relationships}}
-
-HARD RULES:
-- Characters DO NOT change age, gender, or relationship type mid-story.
-- If Maria is Paul's romantic partner, she CANNOT become his daughter.
-- If a character is dead, they CANNOT appear alive without clear resurrection.
-- Maintain consistent roles from scene 1 to the end.
-
-═══════════════════════════════════════════════════════════════════
-PROTOCOL: SELF-CORRECTION (You MUST follow this)
-═══════════════════════════════════════════════════════════════════
-1. You MUST <think> before writing.
-2. In your thought process, you MUST explicitly verify:
-   - TIMELINE: Is current_time = {{current_time}}? Have I already written this timestamp?
-   - EXHAUSTION: Does dialogue/action match the character's current fatigue level?
-   - REPETITION: Am I accidentally repeating the previous scene's action or counting sequence?
-   - PHYSICS: Is the character's posture ({{posture}}) accurate? Can they move freely given their position?
-   - PROGRESSION: What IRREVERSIBLE change happens in this scene?
-   - POV CHECK: Am I using the correct pronouns for {{pov}}?
-6. HALLUCINATION ANCHOR: {{protagonist_name}} is {{protagonist_role}}.
-   - When remembering the past, the character remembers their actual backstory (from manifest).
-   - Stay true to the genre and setting defined in the story profile. Do NOT import tropes from unrelated genres.
-7. If you catch an error in your thoughts, CORRECT IT before outputting prose.
-8. DO NOT output ratings, scores, critiques, or meta-commentary in the final text.
-
-PROCESS (After self-correction):
-1. <think> - Reason, check constraints above, fix any issues in your head
-2. <plan> - Beat-by-beat: opening image → tension builds → turn → consequence
-3. <write> - Output ONLY the final polished prose
-
-PROSE RULES:
-- DEEP POV only: render perception through what the character would notice and how they'd phrase it.
-- SHOW, DON'T TELL: no explaining feelings; reveal via behavior, choices, micro-actions, sensory anchors, and omission.
-- NO FILTER WORDS: eliminate "he saw / she felt / he noticed / he realized / she thought".
-- CONCRETE OVER ABSTRACT: specific nouns, grounded verbs.
-- ONE SHARP DETAIL PER SENTENCE: avoid laundry-lists of description.
-- DIALOGUE SUBTEXT: characters do not say what they mean; desire leaks through avoidance, control, baiting, deflection, tenderness, or silence.
-- IRREVERSIBLE CHANGE: The scene MUST end with the situation fundamentally different from the start.
-
-QUALITY CONTROL (CRITICAL):
-1. **NEGATIVE CONSTRAINT:** You are FORBIDDEN from outputting "Scores," "Tribunal Ratings," "[Tribunal Scores: ...]" or any meta-commentary in the prose. PROSE ONLY.
-2. **PHYSICS CHECK:** Refer to the world state 'posture' variable:
-   - IF 'Standing': Character can walk, run, gesture freely.
-   - IF 'Sitting': Limited movement, must stand to leave.
-   - IF 'Lying down': Horizontal, limited view.
-
-ANTI-LOOPING PROTOCOL:
-- After EVERY scene, you must advance the narrative timeline.
-- IF you just wrote "Alex opens the door", THEN the next scene MUST show Alex in the new room.
-- NEVER write the same plot beat twice.
-- Do NOT rewrite a timestamp. If 02:42 is done, move to 02:45.
-
-STATE MANAGEMENT PROTOCOL:
-After completing the scene prose, you MUST output a YAML block to advance the story time:
-
-```yaml
-UPDATE_STATE:
-  current_time: "02:55 AM"
-  current_location: "Kitchen"
-  posture: "Standing"
-```
-calculate the new time based on scene duration. If nothing changed, the scene FAILED.
-
-CRITICAL: If the scene ends the same as it started, you have FAILED. Something must change that cannot be undone.
-"""
+WRITER_FRAME_PROMPT = load_prompt("system", "writer_frame.md")
 
 
 # ------------------------------------------------------------------
@@ -449,68 +286,19 @@ def build_micro_outline(
     current_loc = world_state.get("current_location", "unknown")
     current_time = world_state.get("current_time", "unknown")
     
-    prompt = f"""You are a scene architect. Plan what happens in this scene with precision.
-
-<think>
-1. What is the character's exact situation RIGHT NOW? (Location, emotional state, immediate problem)
-2. What MUST be different by the end of this scene? (Irreversible change)
-3. What could go wrong? What unexpected element creates the turn?
-4. How do we avoid repeating what happened in recent scenes?
-</think>
-
-SCENE GOAL: {scene_goal}
-
-BEFORE STATE (how scene starts):
-{before_state if before_state else f"Location: {current_loc}, Time: {current_time}"}
-
-AFTER STATE (how scene MUST end - different from before):
-{after_state if after_state else "Must be determined - something irreversible happens"}
-
-CHARACTERS: {', '.join(char_names) if char_names else 'To be shown through action'}
-
-═══════════════════════════════════════════════════════════════════
-FIX #5: FULL STORY CONTEXT (Last 10 scenes)
-═══════════════════════════════════════════════════════════════════
-{all_scenes_block}
-
-═══════════════════════════════════════════════════════════════════
-RECENT SCENES (DO NOT REPEAT THESE):
-═══════════════════════════════════════════════════════════════════
-{anti_repetition_block}
-
-═══════════════════════════════════════════════════════════════════
-FIX #6: SCENE DIVERSITY RULES (MANDATORY)
-═══════════════════════════════════════════════════════════════════
-1. Each scene MUST introduce a NEW element: new location, new character action, new revelation.
-2. Do NOT repeat the same dominant imagery (waves, fog, cold) without transformation.
-3. If recent scenes focused on physical sensation, this scene focuses on dialogue or memory.
-4. If recent scenes were introspective, this scene has external conflict.
-5. VARY THE RHYTHM: short tense scenes, then longer contemplative ones.
-
-CURRENT STAKES: {json.dumps(arc_ledger.get('stakes', [])[-3:], indent=2)}
-
-UNRESOLVED TENSIONS: {json.dumps(arc_ledger.get('unresolved_questions', [])[-3:], indent=2)}
-
-Return JSON ONLY:
-{{
-  "before_state": "Exact character situation at scene START",
-  "after_state": "Exact character situation at scene END (MUST BE DIFFERENT)",
-  "irreversible_change": "What cannot be undone after this scene",
-  "want": "What the POV character actively pursues",
-  "obstacle": "Specific thing that blocks them",
-  "turn": "The unexpected shift - new info, betrayal, discovery, choice",
-  "consequence": "The price paid or new pressure created",
-  "beats": [
-    "Opening image - ground us in the moment",
-    "Rising tension - the obstacle manifests",
-    "The turn - everything shifts",
-    "Consequence - the irreversible change locks in"
-  ],
-  "subtext_hook": "What is NOT said but understood",
-  "anti_repetition_note": "How this scene differs from recent scenes",
-  "diversity_note": "What NEW element does this scene introduce?"
-}}
-"""
+    prompt_template = load_prompt("templates", "micro_outline.md")
+    
+    # Fill the template
+    prompt = prompt_template.format(
+        scene_goal=scene_goal,
+        before_state_text=before_state if before_state else f"Location: {current_loc}, Time: {current_time}",
+        after_state_text=after_state if after_state else "Must be determined - something irreversible happens",
+        character_names=', '.join(char_names) if char_names else 'To be shown through action',
+        all_scenes_block=all_scenes_block,
+        anti_repetition_block=anti_repetition_block,
+        current_stakes=json.dumps(arc_ledger.get('stakes', [])[-3:], indent=2),
+        unresolved_tensions=json.dumps(arc_ledger.get('unresolved_questions', [])[-3:], indent=2)
+    )
     out = call_ollama([{"role": "user", "content": prompt}], model=WRITER_MODEL, json_mode=True)
     data = extract_clean_json(out)
     if data:

@@ -9,18 +9,26 @@ import time
 from typing import Any, Dict, Optional
 
 
+from config import (
+    UI_BANNER_WIDTH,
+    UI_SECTION_WIDTH,
+    UI_PROGRESS_BAR_WIDTH,
+    LOCAL_BREATH_SECONDS
+)
+
+
 # ------------------------------------------------------------------
 #  CONSOLE FORMATTING
 # ------------------------------------------------------------------
 
-def print_banner(text: str, width: int = 60) -> None:
+def print_banner(text: str, width: int = UI_BANNER_WIDTH) -> None:
     """Print a banner with centered text."""
     print("\n" + "=" * width)
     print(text.center(width))
     print("=" * width)
 
 
-def print_section(title: str, char: str = "-", width: int = 60) -> None:
+def print_section(title: str, char: str = "-", width: int = UI_SECTION_WIDTH) -> None:
     """Print a section header."""
     print(f"\n{char * width}")
     print(f" {title}")
@@ -30,7 +38,7 @@ def print_section(title: str, char: str = "-", width: int = 60) -> None:
 def print_progress(current: int, total: int, label: str = "Progress") -> None:
     """Print a progress bar."""
     pct = (current / total * 100) if total > 0 else 0
-    bar_width = 30
+    bar_width = UI_PROGRESS_BAR_WIDTH
     filled = int(bar_width * pct / 100)
     bar = "█" * filled + "░" * (bar_width - filled)
     print(f"   {label}: [{bar}] {pct:.1f}% ({current:,}/{total:,})")
@@ -95,6 +103,6 @@ def status_drift(has_drift: bool) -> None:
 #  TIMING HELPER
 # ------------------------------------------------------------------
 
-def breath(seconds: float = 1.25) -> None:
+def breath(seconds: float = LOCAL_BREATH_SECONDS) -> None:
     """Brief pause to let the system breathe."""
     time.sleep(seconds)

@@ -8,14 +8,16 @@ import os
 import threading
 from typing import Optional
 
-from config import CRITIC_MODEL
+from config import (
+    CRITIC_MODEL,
+    HUMAN_REVIEW_TIMEOUT,
+    MANUSCRIPT_EXCERPT_CHARS,
+    UI_BANNER_WIDTH
+)
 from ollama_client import call_ollama
+from logger import logger
 
 
-# ------------------------------------------------------------------
-#  TIMEOUT CONFIGURATION
-# ------------------------------------------------------------------
-HUMAN_REVIEW_TIMEOUT = int(os.getenv("HUMAN_REVIEW_TIMEOUT", "300"))  # 5 minutes default
 
 
 def input_with_timeout(prompt: str, timeout_seconds: int = HUMAN_REVIEW_TIMEOUT) -> Optional[str]:
@@ -56,8 +58,8 @@ def generate_ai_chapter_review(manuscript_path: str) -> str:
     try:
         with open(manuscript_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        # Get last ~6000 chars (roughly the recent chapter)
-        excerpt = content[-6000:] if len(content) > 6000 else content
+        # Get last excerpt from manuscript
+        excerpt = content[-MANUSCRIPT_EXCERPT_CHARS:] if len(content) > MANUSCRIPT_EXCERPT_CHARS else content
         
         messages = [
             {"role": "system", "content": AUTO_REVIEW_PROMPT},
@@ -113,9 +115,9 @@ def run_chapter_checkpoint(
     """
     progress_pct = (word_count / target_words * 100) if target_words > 0 else 0
     
-    print("\n" + "="*60)
+    print("\n" + "="*UI_BANNER_WIDTH)
     print(f"📖 CHAPTER {current_chapter} COMPLETE ({current_scene_count} scenes total)")
-    print("="*60)
+    print("="*UI_BANNER_WIDTH)
     
     print(f"\n📊 Progress: {word_count:,} / {target_words:,} words ({progress_pct:.1f}%)")
     print(f"📄 Manuscript: {manuscript_path}")
@@ -128,20 +130,25 @@ def run_chapter_checkpoint(
         
         if user_input is None:
             # Timeout occurred - generate AI review and continue
+            logger.info("Human review timed out. Generating AI review.")
             print("\n   ⏰ No response received. Generating AI review...")
             ai_review = generate_ai_chapter_review(manuscript_path)
             print(f"\n   🤖 AUTO-REVIEW:\n   {ai_review}\n")
             print("   ▶️  Auto-continuing to next chapter...")
+            logger.info("Auto-continuing to next chapter.")
             return False  # Continue
         elif user_input.strip().lower() in ('pause', 'stop', 'review', 'p', 's', 'r'):
+            logger.info("Human requested pause for review.")
             print("\n⏸️  Pausing for human review.")
             print(f"   Review manuscript at: {manuscript_path}")
             print("   Make any edits directly, then restart the agent to continue.")
-            print("="*60 + "\n")
+            print("="*UI_BANNER_WIDTH + "\n")
             return True  # Break/pause
         else:
+            logger.info("Human approved valid chapter.")
             print("   ▶️  Continuing to next chapter...")
             return False  # Continue
     except KeyboardInterrupt:
+        logger.warning("Interrupted by user.")
         print("\n⏹️  Interrupted by user. Exiting...")
         return True  # Break/pause

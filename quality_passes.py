@@ -11,7 +11,14 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from config import CRITIC_MODEL, STATE_EXCERPT_CHARS
+from config import (
+    CRITIC_MODEL, 
+    STATE_EXCERPT_CHARS,
+    LINT_REPETITION_THRESHOLD,
+    LINT_RHYTHM_THRESHOLD,
+    MIN_PROSE_PARA_LENGTH,
+    MAX_CONTEXT_WINDOW_DRAFT
+)
 from ollama_client import call_ollama, extract_clean_json
 
 
@@ -155,7 +162,7 @@ def remove_duplicate_paragraphs(text: str) -> str:
         # Normalize for comparison (strip, lowercase)
         normalized = para.strip().lower()
         # Skip very short paragraphs from dedup (like "---")
-        if len(normalized) < 50:
+        if len(normalized) < MIN_PROSE_PARA_LENGTH:
             unique_paragraphs.append(para)
             continue
         
@@ -215,13 +222,13 @@ def lint_text(text: str) -> Dict[str, Any]:
         if len(t) < 4:
             continue
         freq[t] = freq.get(t, 0) + 1
-    repeats = sorted([(w, c) for w, c in freq.items() if c >= 10], key=lambda x: x[1], reverse=True)[:12]
+    repeats = sorted([(w, c) for w, c in freq.items() if c >= LINT_REPETITION_THRESHOLD], key=lambda x: x[1], reverse=True)[:12]
     if repeats:
         issues.append({"type": "repetition", "top_repeats": repeats})
 
     # Sentence rhythm heuristic: too many sentences starting with "He/She/I"
     starts = re.findall(r"(?m)^\s*(He|She|I)\b", text)
-    if len(starts) >= 10:
+    if len(starts) >= LINT_RHYTHM_THRESHOLD:
         issues.append({"type": "rhythm", "note": f"Many sentences start with {set(starts)}; vary openings."})
 
     return {"issue_count": len(issues), "issues": issues}
@@ -290,7 +297,7 @@ CHARACTER BIBLE:
 {json.dumps(char_bible, indent=2)}
 
 SCENE:
-{draft[:2400]}
+{draft[:MAX_CONTEXT_WINDOW_DRAFT]}
 
 OUTPUT JSON:
 {{
@@ -363,7 +370,7 @@ WORLD STATE:
 {json.dumps(world_state, indent=2)}
 
 SCENE:
-{scene_text[:2400]}
+{scene_text[:MAX_CONTEXT_WINDOW_DRAFT]}
 
 OUTPUT:
 {{

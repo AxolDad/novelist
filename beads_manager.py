@@ -104,30 +104,112 @@ def beads_all_work_closed(status_text: str) -> bool:
 import subprocess
 import os
 from typing import List
+from logger import logger
 
-def run_beads(args: List[str]) -> str:
+def run_beads(args: List[str], capture_output: bool = True) -> str:
     """Run a Beads command and return stdout."""
     cmd = ["bd"] + args
     try:
         # Check if we should enforce direct mode explicitly?
         # config.py sets os.environ["BD_DIRECT"] = "1"
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        if result.returncode != 0:
-             # Just return empty or log? For robustness we return stderr if needed,
-             # but caller usually expects stdout.
+        if capture_output:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=30
+            )
+            stdout = result.stdout.strip()
+        else:
+            # Direct to console WITH FILTERING
+            # We want to suppress the "2 beads databases" warning box
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, # Merge stderr
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
+            )
+            
+            stdout_lines = []
+            suppress_box = False
+            
+            for line in process.stdout:
+                # Store for return value if needed (though usually empty for non-capture)
+                stdout_lines.append(line)
+                
+                # Filter Logic
+                stripped = line.strip()
+                
+                # Detect start/end of warning box
+                if "WARNING: 2 beads databases detected" in line:
+                    suppress_box = True
+                    continue
+                
+                if suppress_box:
+                    if "╚" in line and "╝" in line: # End of box
+                        suppress_box = False
+                    continue
+                    
+                # Also filter the box headers if they appear alone before detection?
+                # The box starts with ╔══...
+                # If we are in suppress mode, we skip.
+                # If we see a top border line AND the next line is the warning, we should have suppressed.
+                # But we process line by line.
+                # Heuristic: Start suppression on top border? No, that hides other warnings.
+                # Heuristic: If line contains ╔══... we might buffer it?
+                # Simpler: If line contains "WARNING: 2 beads databases", we retroactively hate the previous line? No.
+                # We can just swallow the text content lines. The borders are ugly but harmless if printed alone.
+                # User specifically hates the warning content.
+                # Let's try to be smart:
+                # If line has "WARNING: 2 beads databases", skip it.
+                # If line has "Multiple databases can cause confusion", skip it.
+                # If line has "RECOMMENDED: Consolidate", skip it.
+                # If line is listing the paths ...\.beads, skip it.
+                
+                if "WARNING: 2 beads databases detected" in line: continue
+                if "Multiple databases can cause confusion" in line: continue
+                if "RECOMMENDED: Consolidate or remove" in line: continue
+                if "Currently using the closest database" in line: continue
+                if ".beads (" in line and "issues)" in line: continue # The path lines
+                if "Protecting" in line and "issues(s) from left snapshot" in line: continue # Sometimes seen
+                
+                # Filter the borders if they are part of THIS warning?
+                # Hard to know for sure. Let's leave borders or filter if they are PURE border lines?
+                # ╔════...
+                # ╠════...
+                # ╚════...
+                if stripped.startswith("╔═") and stripped.endswith("═╗"): continue
+                if stripped.startswith("╠═") and stripped.endswith("═╣"): continue
+                if stripped.startswith("╚═") and stripped.endswith("═╝"): continue
+                
+                print(line, end='', flush=True)
+
+            process.wait(timeout=30)
+            stdout = "".join(stdout_lines) # Return full output just in case caller wants it locally?
+            
+        # Check failure if process was managed manually
+        if not capture_output and process.returncode != 0:
              pass
-        return result.stdout.strip()
+
+        return stdout
+    except subprocess.TimeoutExpired:
+        logger.error(f"Beads command timed out: {' '.join(args)}")
+        if not capture_output:
+             # Kill it if we spawned it
+             try:
+                 process.kill()
+             except: pass
+        return ""
     except FileNotFoundError:
-        print("⚠️ Beads (bd) binary not found.")
+        logger.error("Beads (bd) binary not found.")
         return ""
     except Exception as e:
-        print(f"❌ Beads Error: {e}")
+        logger.error(f"Beads Error: {e}")
         return ""
 
 def force_sync():

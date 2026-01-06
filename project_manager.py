@@ -11,6 +11,7 @@ from typing import Dict, Optional, List
 
 import config
 from file_utils import safe_read_json
+from logger import logger
 
 
 # Global project path
@@ -129,12 +130,12 @@ def handle_project_argument(project_arg: Optional[str]) -> bool:
         
     project_path = os.path.abspath(project_arg)
     if os.path.exists(project_path):
-        print(f"📂 Switching context to: {project_path}")
+        logger.info(f"Switching context to: {project_path}")
         os.chdir(project_path)
         setup_project_paths(project_path)
         if os.path.exists("story.db"):
-            print(f"   (Found story.db)")
+            logger.info("Found story.db")
         return True
     else:
-        print(f"❌ Project path not found: {project_path}")
+        logger.error(f"Project path not found: {project_path}")
         return False

@@ -1,31 +1,23 @@
 @echo off
 setlocal
 title Novelist Agent
+
 echo ===================================================
-echo 🚀 Launching Novelist System
+echo 🚀 Launching Novelist System (v2 Launcher)
 echo ===================================================
 
-:: 1. Check for legacy migration
-if exist story.db goto :skip_migrate
-if exist world_state.json (
-    if exist migrate_json_to_sqlite.py (
-        echo 📦 Found legacy JSON files. Migrating to SQLite...
-        python migrate_json_to_sqlite.py
+:: Run rotation/migration util if needed
+if exist migrate_json_to_sqlite.py (
+    if not exist story.db (
+        if exist world_state.json (
+            echo 📦 Found legacy JSON files. Migrating to SQLite...
+            python migrate_json_to_sqlite.py
+        )
     )
 )
-:skip_migrate
 
-:: 2. Launch Dashboard (New Window)
-echo 📊 Starting Dashboard (Browser)...
-start "Novelist Dashboard" python -m streamlit run dashboard.py
+:: Delegate exclusively to Python Launcher
+python start.py
 
-:: 3. Launch Agent (This Window)
-echo 🤖 Startup complete. 
-echo    - Dashboard is running in the browser.
-echo    - Use this window to interact with the Agent.
-echo.
-python novelist.py
-
-echo.
-echo 👋 Agent session ended. Closing.
-pause
+:: Pause on exit so errors are visible
+if errorlevel 1 pause

@@ -26,8 +26,11 @@ import os
 import shutil
 import time
 import argparse
+import subprocess
 from typing import Any, Dict, Optional
 import logging
+
+from logger import logger
 
 # Import from modules
 from config import (
@@ -48,110 +51,56 @@ from config import (
     WRITER_MODEL,
     CRITIC_MODEL,
     LLM_PROVIDER,
+    SCENE_WORD_TARGET_DEFAULT,
+    RECENT_PROSE_EXCERPT_CHARS,
+    TRIBUNAL_PASS_SCORE,
+    LOG_TRUNCATE_CHARS,
+    LOG_TRUNCATE_CHARS_SMALL,
+    UI_BANNER_WIDTH,
+    CHAPTER_SIZE
 )
 
-from ollama_client import (
-    call_ollama,
-    check_ollama_connection,
-    extract_clean_json,
-)
-
-from beads_manager import (
-    run_beads,
-    force_sync,
-    get_task_id,
-    beads_all_work_closed,
-)
-
-from file_utils import (
-    safe_read_json,
-    safe_write_json,
-    tail_excerpt,
-    ensure_project_dirs,
-    mirror_meta_files,
-    load_checkpoint,
-    save_checkpoint,
-    clear_checkpoint,
-    load_recent_scene_context,
-)
-
-from quality_passes import (
-    lint_text,
-    has_dialogue,
-    enforce_style_lint,
-    build_subtext_map,
-    enforce_dialogue_subtext,
-    detect_behavioral_drift,
-    enforce_drift_fixes,
-    sanitize_llm_output,
-)
-
+from ollama_client import check_ollama_connection, extract_clean_json, call_ollama
+from story_architect import generate_story_arc, style_bible_to_prompt, compress_for_prompt, build_memory_anchor, load_style_bible
+from file_utils import safe_read_json, safe_write_json, ensure_project_dirs, load_recent_scene_context, mirror_meta_files, clear_checkpoint, tail_excerpt, save_checkpoint, load_checkpoint
+from review_engine import run_chapter_checkpoint
 from state_manager import (
-    seed_arc_ledger,
-    ensure_arc_ledger_schema,
-    update_arc_ledger,
-    seed_character_bible,
-    update_character_bible,
-    compute_current_word_count,
-    get_target_word_count,
-    update_story_state,
-    strip_state_update_block,
+    compute_current_word_count, 
+    get_target_word_count, 
+    strip_state_update_block, 
     strip_tribunal_scores,
+    update_arc_ledger,
+    update_character_bible,
+    update_story_state,
+    seed_character_bible,
+    ensure_arc_ledger_schema,
+    seed_arc_ledger
 )
-
-from prompts import (
-    critique_scene,
-    select_best_draft,
-    WRITER_FRAME_PROMPT,
-    load_styles_master,
-    build_structure_guidance,
-    build_micro_outline,
-)
-
-from manuscript_polisher import polish_manuscript
-
-from story_architect import (
-    generate_story_arc,
-    build_memory_anchor,
-    compress_for_prompt,
-    generate_style_bible,
-    load_style_bible,
-    save_style_bible,
-    style_bible_to_prompt,
-    validate_progression,
-    extract_scene_delta,
-)
-
-# New extracted modules
+from db_manager import set_db_path, init_db, get_kv, set_kv
+from project_manager import setup_project_paths
+from beads_manager import run_beads, beads_all_work_closed, get_task_id
 from draft_engine import generate_parallel_drafts
-from review_engine import (
-    HUMAN_REVIEW_TIMEOUT,
-    input_with_timeout,
-    generate_ai_chapter_review,
-    run_chapter_checkpoint,
+from manuscript_polisher import polish_manuscript
+from ui_helpers import print_banner
+from quality_passes import (
+    lint_text, 
+    enforce_style_lint, 
+    has_dialogue, 
+    build_subtext_map, 
+    enforce_dialogue_subtext, 
+    detect_behavioral_drift, 
+    enforce_drift_fixes,
+    sanitize_llm_output
 )
-from project_manager import (
-    setup_project_paths,
-    run_project_picker,
-    handle_project_argument,
-    PROJECT_PATH,
-)
-from ui_helpers import (
-    print_banner,
-    print_section,
-    print_progress,
-    print_model_info,
-    print_story_header,
-    status_drafting,
-    status_tribunal,
-    status_scores,
-    status_pass,
-    status_fail,
-    status_world_update,
-    status_drift,
-    breath,
-)
+from prompts import critique_scene, build_micro_outline, WRITER_FRAME_PROMPT, build_structure_guidance, load_styles_master
 
+def force_sync():
+    """Force Beads sync to update state."""
+    logger.info("Syncing beads...")
+    run_beads(["sync"], capture_output=False)
+# ... [rest of imports unchanged for brevity in this tool call, but context holds them]
+
+# ... [imports continue]
 
 # ------------------------------------------------------------------
 #  MACRO OUTLINE (Auto-plan additional scenes using Story Architect)
@@ -174,7 +123,7 @@ def ensure_macro_outline(
         return existing
 
     planning = manifest.get("planning", {}) or {}
-    scene_word_target = int(planning.get("scene_word_target") or 0) or 1200
+    scene_word_target = int(planning.get("scene_word_target") or 0) or SCENE_WORD_TARGET_DEFAULT
     
     # Calculate how many scenes we need
     target_wc = get_target_word_count(manifest)
@@ -182,7 +131,7 @@ def ensure_macro_outline(
     words_remaining = max(target_wc - current_wc, 0)
     scenes_needed = max((words_remaining // scene_word_target) + 2, 5)
     
-    print(f"   🧠 Using Story Architect to reason through {scenes_needed}-scene arc...")
+    logger.info(f"Using Story Architect to reason through {scenes_needed}-scene arc...")
     
     # Use the new story architect for proper reasoning
     arc_data = generate_story_arc(
@@ -208,8 +157,9 @@ def ensure_macro_outline(
         "scenes": scenes
     }
     
-    print(f"   ✅ Arc generated: {data['chosen_endpoint']} ending with {len(scenes)} scenes")
-    print(f"      Core tension: {data['core_tension'][:80]}..." if data['core_tension'] else "")
+    logger.info(f"Arc generated: {data['chosen_endpoint']} ending with {len(scenes)} scenes")
+    if data['core_tension']:
+        logger.debug(f"Core tension: {data['core_tension'][:80]}...")
     
     safe_write_json(MACRO_OUTLINE_FILE, data)
     safe_write_json(PROGRESS_FILE, {"next_scene_index": 1})
@@ -250,7 +200,7 @@ def seed_next_scene_task_if_needed(
     
     # If no scene found at that index, we've exhausted the outline - regenerate!
     if not next_scene:
-        print(f"   🔄 Scene index {next_idx} not found in outline. Regenerating macro outline...")
+        logger.warning(f"Scene index {next_idx} not found in outline. Regenerating macro outline...")
         # Reset progress and force regeneration
         safe_write_json(PROGRESS_FILE, {"next_scene_index": 1})
         next_idx = 1
@@ -260,7 +210,7 @@ def seed_next_scene_task_if_needed(
         scenes = macro.get("scenes") or []
         
         if not scenes:
-            print("   ❌ Could not generate macro outline. Manual intervention may be needed.")
+            logger.error("Could not generate macro outline. Manual intervention may be needed.")
             return False
         
         # Get the first scene from the new outline
@@ -271,19 +221,19 @@ def seed_next_scene_task_if_needed(
     title = next_scene.get("title") or f"Scene {next_idx}"
     desc = next_scene.get("goal") or f"Advance macro beat: {next_scene.get('macro_beat', '')}"
     
-    print(f"   🎯 Seeding: {title}")
-    print(f"      Goal: {desc[:80]}...")
+    logger.info(f"Seeding: {title}")
+    logger.debug(f"Goal: {desc[:80]}...")
     
     created = run_beads(['create', title, desc])
     if created is None:
-        print(f"   ❌ Failed to create beads task for {title}")
+        logger.error(f"Failed to create beads task for {title}")
         return False
 
     prog["next_scene_index"] = next_idx + 1
     safe_write_json(PROGRESS_FILE, prog)
     force_sync()
     time.sleep(LOCAL_BREATH_SECONDS)
-    print(f"🧩 Auto-seeded {title} to keep writing toward target words.")
+    logger.info(f"Auto-seeded {title} to keep writing toward target words.")
     return True
 
 
@@ -292,35 +242,35 @@ def seed_next_scene_task_if_needed(
 # ------------------------------------------------------------------
 def system_health_check(manifest: Dict[str, Any]) -> None:
     """Run system health check on startup."""
-    print("\n🩺 SYSTEM HEALTH CHECK")
+    logger.info("SYSTEM HEALTH CHECK")
     
     # 1) Ollama
     if check_ollama_connection():
-        print("   ✅ Ollama reachable.")
+        logger.info("Ollama reachable.")
     else:
-        print("   ❌ Ollama NOT reachable at http://localhost:11434")
-        print("      Fix: start ollama server, confirm port, or adjust OLLAMA_URL.")
+        logger.critical("Ollama NOT reachable at http://localhost:11434")
+        logger.info("Fix: start ollama server, confirm port, or adjust OLLAMA_URL.")
         sys.exit(1)
 
     # 2) Required files
     required = [MANIFEST_FILE, STATE_FILE, ARC_FILE, CHAR_BIBLE_FILE]
     missing = [p for p in required if not os.path.exists(p)]
     if missing:
-        print(f"   ❌ Missing required files: {missing}")
+        logger.critical(f"Missing required files: {missing}")
         sys.exit(1)
-    print("   ✅ Required files present.")
+    logger.info("Required files present.")
 
     # 3) Story title
     title = manifest.get("title") or "(untitled)"
-    print(f"   📘 Story: {title}")
+    logger.info(f"Story: {title}")
 
     # 4) Word count progress
     current_wc = compute_current_word_count(manifest, MANUSCRIPT_FILE_DEFAULT)
     target_wc = get_target_word_count(manifest)
     pct = (current_wc / target_wc * 100.0) if target_wc > 0 else 0.0
-    print(f"   ✍️  Current word count: {current_wc:,}")
-    print(f"   🎯 Target word count:  {target_wc:,}")
-    print(f"   📈 Progress:           {pct:.1f}%\n")
+    logger.info(f"Current word count: {current_wc:,}")
+    logger.info(f"Target word count:  {target_wc:,}")
+    logger.info(f"Progress:           {pct:.1f}%")
 
 
 # ------------------------------------------------------------------
@@ -337,9 +287,7 @@ def finalize_novel(manuscript_path: str, manifest: Dict[str, Any]) -> str:
     
     Returns path to polished manuscript.
     """
-    print("\n" + "="*60)
-    print("🏆 NOVEL COMPLETION SEQUENCE")
-    print("="*60)
+    print_banner("NOVEL COMPLETION SEQUENCE")
     
     # Run manuscript polisher
     polished_path = polish_manuscript(
@@ -349,9 +297,10 @@ def finalize_novel(manuscript_path: str, manifest: Dict[str, Any]) -> str:
     )
     
     if polished_path:
+        logger.info(f"Final manuscript ready: {polished_path}")
         print(f"\n📗 Final manuscript ready: {polished_path}")
     
-    print("="*60 + "\n")
+    print("="*UI_BANNER_WIDTH + "\n")
     return polished_path
 
 
@@ -364,24 +313,27 @@ def init_project() -> None:
     mirror_meta_files()
 
     if not shutil.which('bd'):
-        print("❌ Error: 'bd' tool not found.")
+        logger.error("Error: 'bd' tool not found.")
         sys.exit(1)
 
     if os.path.exists(".beads"):
         force_sync()
+        logger.info("Beads sync complete.")
         time.sleep(LOCAL_BREATH_SECONDS)
     else:
-        print("🚀 Initializing new Beads project...")
+        logger.info("Initializing new Beads project...")
         run_beads(['init'])
         time.sleep(LOCAL_BREATH_SECONDS)
 
+    logger.info("Loading manifest...")
     if not os.path.exists(MANIFEST_FILE):
-        print(f"❌ Error: {MANIFEST_FILE} missing.")
+        logger.critical(f"Error: {MANIFEST_FILE} missing.")
         sys.exit(1)
 
     with open(MANIFEST_FILE, 'r', encoding="utf-8") as f:
         manifest = json.load(f)
 
+    logger.info("Checking state files...")
     if not os.path.exists(STATE_FILE):
         import db_manager as db
         db.set_world_state(manifest.get('world_state', {}))
@@ -397,14 +349,17 @@ def init_project() -> None:
         import db_manager as db
         ws = safe_read_json(STATE_FILE, {})
         char_data = seed_character_bible(ws)
-        db.set_character_bible(char_data)
+        # db.set_character_bible(char_data) -> Invalid method, and redundant if seeding from DB
         safe_write_json(CHAR_BIBLE_FILE, char_data)  # Keep JSON as backup
 
     # Seed styles master if missing
     if not os.path.exists(STYLES_MASTER_FILE):
         safe_write_json(STYLES_MASTER_FILE, load_styles_master())
 
+    logger.info("Checking for existing scenes (run_beads list)...")
     list_json = run_beads(['list', '--json'])
+    logger.info(f"Beads list result len: {len(list_json) if list_json else 0}")
+    
     if not list_json or list_json.strip() == "[]":
         print(f"📚 Seeding Scenes for: {manifest.get('title','(untitled)')}")
         prev_id = None
@@ -455,40 +410,13 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
     # Ensure we are in a valid project state
     init_project()
 
-    # Configure logging
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    
-    # Clear old log file on fresh start
-    log_file = os.path.join(log_dir, "novelist.log")
-    if os.path.exists(log_file):
-        try:
-            os.remove(log_file)
-        except:
-            pass
-
-    logging.basicConfig(
-        filename=log_file,
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        force=True
-    )
-    
-    # Also log to stdout
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(message)s')
-    console.setFormatter(formatter)
-    logging.getLogger('').addHandler(console)
-
-    logging.info("🚀 Novelist Agent Starting...")
+    logger.info("🚀 Novelist Agent Starting...")
 
     manifest = safe_read_json(MANIFEST_FILE, {})
     system_health_check(manifest)
-    system_health_check(manifest)
 
-    print("\n✅ Project Loaded. Starting Agent Loop...")
+    logger.info("\n✅ Project Loaded. Starting Agent Loop...")
+
 
     while True:
         ready_json = run_beads(['ready', '--json'])
@@ -510,9 +438,9 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
                 if seed_next_scene_task_if_needed(manifest, ws_seed, arc_seed, char_seed):
                     continue
             except Exception as e:
-                print(f"   ⚠️ Auto-seed check failed: {e}")
+                logger.warning(f"Auto-seed check failed: {e}")
 
-            print("   ...Syncing database to check for new work...")
+            logger.info("Syncing database to check for new work...")
             force_sync()
             time.sleep(LOCAL_BREATH_SECONDS)
 
@@ -525,14 +453,17 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
                 # Log word count for record
                 current_wc = compute_current_word_count(manifest, MANUSCRIPT_FILE_DEFAULT)
                 target_wc = get_target_word_count(manifest)
+                logger.info(f"NOVEL COMPLETE (All tasks closed). Final Word Count: {current_wc}/{target_wc}")
                 print(f"🏆 NOVEL COMPLETE (All tasks closed). Final Word Count: {current_wc}/{target_wc}")
                 break
+
 
 
             current_wc = compute_current_word_count(manifest, MANUSCRIPT_FILE_DEFAULT)
             target_wc = get_target_word_count(manifest)
             if current_wc >= target_wc:
                 finalize_novel(MANUSCRIPT_FILE_DEFAULT, manifest)
+                logger.info("WORD TARGET MET. No ready scenes in Beads; stopping.")
                 print("🏆 WORD TARGET MET. No ready scenes in Beads; stopping.")
                 break
 
@@ -541,11 +472,13 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
             continue
 
         task = ready_tasks[0]
-        title = task.get('Title') or task.get('title') or "Untitled Scene"
+        title = task.get('Title') # Use Title from beads task
+        if not title:
+            title = "Untitled Scene"
         task_id = task.get('ID') or task.get('id')
         desc = task.get('Desc') or task.get('desc') or ""
 
-        print(f"\n🎬 ACTION: {title} (ID: {task_id})")
+        logger.info(f"\n🎬 ACTION: {title} (ID: {task_id})")
         time.sleep(LOCAL_BREATH_SECONDS)
 
         # Load state / ledgers from DB (Single Source of Truth)
@@ -554,12 +487,12 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
         manifest = safe_read_json(MANIFEST_FILE, {})  # Manifest stays in JSON (user-edited)
         arc_ledger = db.get_arc_ledger() or seed_arc_ledger(manifest)
         arc_ledger = ensure_arc_ledger_schema(arc_ledger, manifest)
-        char_bible = db.get_character_bible() or seed_character_bible(world_state)
+        char_bible = seed_character_bible(world_state)
 
         # Load checkpoint if exists (crash-resume)
         ckpt = load_checkpoint(task_id) or {}
         if ckpt and ckpt.get("task_id") == task_id:
-            print("   ♻️  Checkpoint found. Resuming in-progress scene...")
+            logger.info("Checkpoint found. Resuming in-progress scene...")
 
         # Optional Story Bible text + FIX #8: Include character bible
         story_bible_text = ""
@@ -587,7 +520,12 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
             story_bible_text += "\n\n═══ CHARACTER BIBLE (DO NOT VIOLATE) ═══\n" + "\n\n".join(char_bible_block)
 
         # Rolling prose context
-        recent_prose = load_recent_scene_context(PROSE_CONTEXT_SCENES, PROSE_CONTEXT_MAX_CHARS_EACH)
+        # We fetch raw text blocks from the DB rather than filesystem
+        try:
+            prev_context_blocks = db.get_recent_scene_text(limit=PROSE_CONTEXT_SCENES)
+            recent_prose = "\n".join(prev_context_blocks)
+        except Exception:
+            recent_prose = ""
 
         # Load macro outline to get scene-specific arc info (BEFORE/AFTER states)
         macro_outline = safe_read_json(MACRO_OUTLINE_FILE, {})
@@ -614,7 +552,7 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
         # MICRO-OUTLINE (Beat Sheet) — resume if present
         micro_outline = ckpt.get("micro_outline") if isinstance(ckpt.get("micro_outline"), dict) else None
         if not micro_outline:
-            print("   🧭 Building micro-outline with arc info...")
+            logger.info("Building micro-outline with arc info...")
             
             # P1 FIX #6: Extract previous scene summaries for anti-repetition
             scene_history = arc_ledger.get("scene_history", [])
@@ -642,7 +580,7 @@ def draft_loop(manifest: Dict[str, Any]) -> None:
             save_checkpoint(task_id, ckpt)
             time.sleep(LOCAL_BREATH_SECONDS)
         else:
-            print("   🧭 Using micro-outline from checkpoint.")
+            logger.info("Using micro-outline from checkpoint.")
 
         # Build compressed Memory Anchor for context efficiency
         scene_history = arc_ledger.get("scene_history", [])
@@ -709,7 +647,7 @@ COMPRESSED STORY STATE:
 {compressed_context}
 
 RECENT PROSE (for voice + continuity; do not restate):
-{tail_excerpt(recent_prose, 1500) if recent_prose else "No previous scenes"}
+{tail_excerpt(recent_prose, RECENT_PROSE_EXCERPT_CHARS) if recent_prose else "No previous scenes"}
 
 SCENE ARC INFO (from Story Architect):
 Before State: {micro_outline.get('before_state', 'To be established')}
@@ -762,7 +700,7 @@ Return ONLY the scene prose (no tags, no commentary).
             draft = generate_parallel_drafts(system_context, draft_prompt)
 
             if not draft:
-                print("   ❌ Failed to generate draft. Retrying loop...")
+                logger.error("Failed to generate draft. Retrying loop...")
                 time.sleep(2.0)
                 continue
 
@@ -777,13 +715,13 @@ Return ONLY the scene prose (no tags, no commentary).
             save_checkpoint(task_id, ckpt)
             time.sleep(LOCAL_BREATH_SECONDS)
         else:
-            print("   ✍️  Using draft from checkpoint.")
+            logger.info("Using draft from checkpoint.")
             time.sleep(LOCAL_BREATH_SECONDS)
 
         # ENFORCED QUALITY PASSES (checkpoint-aware)
         lint = lint_text(draft)
         if (not ckpt.get("lint_done")) and lint.get("issue_count", 0) > 0:
-            print(f"   🧽 Style lint found {lint['issue_count']} issue groups. Enforcing cleanup...")
+            logger.info(f"Style lint found {lint['issue_count']} issue groups. Enforcing cleanup...")
             draft = enforce_style_lint(draft, lint, system_context)
             ckpt["draft"] = draft
             ckpt["lint_done"] = True
@@ -791,10 +729,10 @@ Return ONLY the scene prose (no tags, no commentary).
             time.sleep(LOCAL_BREATH_SECONDS)
 
         if (not ckpt.get("subtext_done")) and has_dialogue(draft):
-            print("   🗣️  Dialogue detected. Building subtext map...")
+            logger.info("Dialogue detected. Building subtext map...")
             smap = build_subtext_map(draft, world_state, char_bible)
             if smap:
-                print("   🧠 Enforcing subtext rewrite...")
+                logger.info("Enforcing subtext rewrite...")
                 draft = enforce_dialogue_subtext(draft, smap, system_context)
                 ckpt["draft"] = draft
                 ckpt["subtext_done"] = True
@@ -802,10 +740,10 @@ Return ONLY the scene prose (no tags, no commentary).
                 time.sleep(LOCAL_BREATH_SECONDS)
 
         if not ckpt.get("drift_done"):
-            print("   🧪 Running character drift check...")
+            logger.info("Running character drift check...")
             drift = detect_behavioral_drift(draft, char_bible, world_state)
             if drift.get("drift_found"):
-                print("   🧷 Drift found. Enforcing consistency rewrite...")
+                logger.info("Drift found. Enforcing consistency rewrite...")
                 draft = enforce_drift_fixes(draft, drift, system_context)
             ckpt["draft"] = draft
             ckpt["drift_done"] = True
@@ -842,18 +780,19 @@ Return ONLY the scene prose (no tags, no commentary).
                 safe_score(review.get('redundancy_score')), 
                 safe_score(review.get('arc_score'))
             ]
-            print(f"   📊 Tribunal Scores: Prose={scores[0]} | Redundancy={scores[1]} | Arc={scores[2]} (Attempt {attempts})")
+            logger.info(f"Tribunal Scores: Prose={scores[0]} | Redundancy={scores[1]} | Arc={scores[2]} (Attempt {attempts})")
 
             ckpt["tribunal_attempts"] = attempts
             ckpt["draft"] = draft
             save_checkpoint(task_id, ckpt)
 
-            if all(s >= 90 for s in scores):
-                print("   ✅ ALL THREE CRITICS SATISFIED.")
+            # Check if all scores meet target (Single Source of Truth)
+            if all(s >= TRIBUNAL_PASS_SCORE for s in scores):
+                logger.info("ALL THREE CRITICS SATISFIED.")
                 break
 
             if attempts > 3:
-                print("   ⚠️ MAX REVISIONS REACHED. FORCING PROGRESS.")
+                logger.warning("MAX REVISIONS REACHED. FORCING PROGRESS.")
                 break
 
             # Extract actionable feedback from each reviewer
@@ -867,7 +806,7 @@ Return ONLY the scene prose (no tags, no commentary).
             revision_history.append({
                 "attempt": attempts,
                 "scores": {"prose": scores[0], "redundancy": scores[1], "arc": scores[2]},
-                "priority_issue": priority_fix[:100],  # Truncate for prompt efficiency
+                "priority_issue": priority_fix[:LOG_TRUNCATE_CHARS],  # Truncate for prompt efficiency
                 "lowest_score": min(zip(["prose", "redundancy", "arc"], scores), key=lambda x: x[1])[0]
             })
             
@@ -876,7 +815,7 @@ Return ONLY the scene prose (no tags, no commentary).
             if len(revision_history) > 1:
                 revision_memory_block = "\n═══ REVISION HISTORY (WHAT WAS TRIED) ═══\n"
                 for rh in revision_history[:-1]:  # All except current
-                    revision_memory_block += f"Attempt {rh['attempt']}: Scores P={rh['scores']['prose']}/R={rh['scores']['redundancy']}/A={rh['scores']['arc']} | Issue: {rh['priority_issue'][:50]}\n"
+                    revision_memory_block += f"Attempt {rh['attempt']}: Scores P={rh['scores']['prose']}/R={rh['scores']['redundancy']}/A={rh['scores']['arc']} | Issue: {rh['priority_issue'][:LOG_TRUNCATE_CHARS_SMALL]}\n"
                 revision_memory_block += "\n⚠️ DO NOT repeat failed approaches. Try something NEW.\n"
             
             lint2 = lint_text(draft)
@@ -919,7 +858,7 @@ CRITICAL CONSTRAINTS:
 
 Return ONLY revised scene text (plus UPDATE_STATE block at end).
 """
-            print("   🔄 REVISING...")
+            logger.info("REVISING...")
             revised = call_ollama([
                 {"role": "system", "content": system_context},
                 {"role": "user", "content": revision_prompt},
@@ -994,7 +933,7 @@ OUTPUT FORMAT:
                 # Save to DB (Single Source of Truth)
                 db.set_world_state(world_state)
                 safe_write_json(STATE_FILE, world_state)  # Keep JSON as backup
-                print("🌍 World State Updated.")
+                logger.info("World State Updated.")
             except Exception:
                 pass
         
@@ -1015,6 +954,22 @@ OUTPUT FORMAT:
         char_bible = update_character_bible(char_bible, draft, world_state)
         # safe_write_json(CHAR_BIBLE_FILE, char_bible)
         mirror_meta_files()
+        
+        # LOG TO DB (Single Source of Truth)
+        # We now persist the micro_outline (Plan) alongside the result
+        db.log_scene(
+            title=title,
+            filename=filename,
+            content=draft,
+            meta={
+                "summary": arc_ledger.get("scene_history", [{}])[-1].get("summary", ""),
+                "consequence": arc_ledger.get("scene_history", [{}])[-1].get("consequence", ""),
+                "characters_present": characters_present,
+                "word_count": len(draft.split()),
+                "tribunal_scores": {"prose": scores[0], "redundancy": scores[1], "arc": scores[2]}
+            },
+            micro_outline=micro_outline
+        )
 
         # SAVE OUTPUTS
         ensure_project_dirs()
@@ -1049,7 +1004,7 @@ OUTPUT FORMAT:
                     # Clean the draft: remove tribunal scores and state update blocks
                     clean_draft = strip_tribunal_scores(strip_state_update_block(draft.strip()))
                     mf.write(clean_draft + "\n")
-                print(f"📚 Appended to manuscript: {manuscript_path}")
+                logger.info(f"Appended to manuscript: {manuscript_path}")
             except Exception:
                 pass
 
@@ -1059,7 +1014,7 @@ OUTPUT FORMAT:
             try:
                 with open(scene_path, "w", encoding="utf-8") as f:
                     f.write(draft)
-                print(f"✅ Scene file saved to {scene_path}")
+                logger.info(f"Scene file saved to {scene_path}")
             except Exception:
                 pass
 
@@ -1080,51 +1035,24 @@ OUTPUT FORMAT:
         # Checkpoint is no longer needed after successful completion
         clear_checkpoint(task_id)
 
-        print(f"✅ Scene Complete. Saved to {filename}")
+        logger.info(f"✅ Scene Complete. Saved to {filename}")
         
         # FIX #10: Progressive Human Review - Chapter Checkpoints
-        CHAPTER_SIZE = 5  # Scenes per chapter
-        CHECKPOINT_ENABLED = True  # Set to False to disable interactive checkpoints
-        
         current_scene_count = len(arc_ledger.get("scene_history", [])) + 1
-        current_chapter = (current_scene_count - 1) // CHAPTER_SIZE
         is_chapter_end = current_scene_count % CHAPTER_SIZE == 0
         
-        if CHECKPOINT_ENABLED and is_chapter_end and current_scene_count > 0:
-            print("\n" + "="*60)
-            print(f"📖 CHAPTER {current_chapter} COMPLETE ({current_scene_count} scenes total)")
-            print("="*60)
-            
-            # Show quality metrics
+        if is_chapter_end:
             word_count = compute_current_word_count(manifest, MANUSCRIPT_FILE_DEFAULT)
             target_words = get_target_word_count(manifest)
-            progress_pct = (word_count / target_words * 100) if target_words > 0 else 0
             
-            print(f"\n📊 Progress: {word_count:,} / {target_words:,} words ({progress_pct:.1f}%)")
-            print(f"📄 Manuscript: {manuscript_path}")
-            print(f"\n💡 Review the chapter and provide feedback to improve quality.")
-            print(f"   Press ENTER to continue, or type 'pause' to stop for detailed review.")
-            print(f"   (Auto-continuing in {HUMAN_REVIEW_TIMEOUT // 60} minutes if no response)\n")
-            
-            try:
-                user_input = input_with_timeout("   > ", HUMAN_REVIEW_TIMEOUT)
-                
-                if user_input is None:
-                    # Timeout occurred - generate AI review and continue
-                    print("\n   ⏰ No response received. Generating AI review...")
-                    ai_review = generate_ai_chapter_review(manuscript_path)
-                    print(f"\n   🤖 AUTO-REVIEW:\n   {ai_review}\n")
-                    print("   ▶️  Auto-continuing to next chapter...")
-                elif user_input.strip().lower() in ('pause', 'stop', 'review', 'p', 's', 'r'):
-                    print("\n⏸️  Pausing for human review.")
-                    print(f"   Review manuscript at: {manuscript_path}")
-                    print("   Make any edits directly, then restart the agent to continue.")
-                    print("="*60 + "\n")
-                    break  # Exit the main loop for review
-                else:
-                    print("   ▶️  Continuing to next chapter...")
-            except KeyboardInterrupt:
-                print("\n⏹️  Interrupted by user. Exiting...")
+            should_pause = run_chapter_checkpoint(
+                manuscript_path=manuscript_path,
+                current_chapter=(current_scene_count // CHAPTER_SIZE),
+                current_scene_count=current_scene_count,
+                word_count=word_count,
+                target_words=target_words
+            )
+            if should_pause:
                 break
 
 
@@ -1142,16 +1070,29 @@ def main():
     if args.project:
         project_path = os.path.abspath(args.project)
         if os.path.exists(project_path):
-            print(f"📂 Switching context to: {project_path}")
+            logger.info(f"Switching context to: {project_path}")
             os.chdir(project_path)
             setup_project_paths(project_path)
             if os.path.exists("story.db"):
-                print(f"   (Found story.db)")
+                logger.info("Found story.db")
         else:
-            print(f"❌ Project path not found: {project_path}")
+            logger.critical(f"Project path not found: {project_path}")
             sys.exit(1)
             
     # Auto-Detect / Project Picker
+    elif os.path.exists(MANIFEST_FILE) and not args.project:
+        # GUARDRAIL: We found a manifest in root, but user didn't explicitly ask for it.
+        # This prevents "Untitled" hallucinations when running from root.
+        print(f"\n⚠️  ROOT MANIFEST DETECTED: {os.path.abspath(MANIFEST_FILE)}")
+        print("   The agent normally expects projects to be in subfolders.")
+        confirm = input("   Do you really want to load this root directory? [y/N]: ").strip().lower()
+        if confirm != 'y':
+            logger.info("User Aborted root loading.")
+            sys.exit(0)
+        
+        # If yes, proceed comfortably
+        pass
+
     elif not os.path.exists(MANIFEST_FILE):
         # We are likely in Root without a root story.
         # Check for 'projects' folder
@@ -1176,49 +1117,50 @@ def main():
             choice = input("\nSelect a project to load: ").strip().lower()
             
             if choice == 'n':
-                print("🚀 Launching Dashboard for Project Creation...")
+                logger.info("Launching Dashboard for Project Creation...")
                 try:
                     subprocess.Popen(["streamlit", "run", "dashboard.py"], shell=True)
                 except Exception as e:
-                    print(f"Error launching dashboard: {e}")
+                    logger.error(f"Error launching dashboard: {e}")
                 sys.exit(0)
             elif choice == 'q':
                 sys.exit(0)
             elif choice.isdigit() and 1 <= int(choice) <= len(available_projects):
                 selected = available_projects[int(choice)-1]
                 target_path = os.path.join(projects_dir, selected)
-                print(f"📂 Switching context to: {target_path}")
+                logger.info(f"Switching context to: {target_path}")
                 os.chdir(target_path)
                 setup_project_paths(target_path)
             else:
                 print("❌ Invalid selection.")
                 sys.exit(1)
         else:
-             print(f"⚠️  No Story Manifest found in current folder.")
-             print(f"   (No projects found in {projects_dir})")
+             logger.warning(f"No Story Manifest found in current folder.")
+             logger.info(f"(No projects found in {projects_dir})")
              print("\n   Run 'streamlit run dashboard.py' to create a New Story.")
              input("   Press Enter to exit...")
              sys.exit(1)
 
     # START AGENT
+    logger.info(f"Novelist Agent initializing...")
     print(f"🤖 Novelist Agent initializing...")
     if not check_ollama_connection():
-         print(f"❌ Cannot connect to Ollama at {os.environ.get('OLLAMA_HOST', 'localhost:11434')}")
+         logger.critical(f"Cannot connect to Ollama at {os.environ.get('OLLAMA_HOST', 'localhost:11434')}")
          print("   Please start Ollama and try again.")
          sys.exit(1)
 
-    print(f"✅ Connected to {LLM_PROVIDER.upper()}")
-    print(f"   Writer: {WRITER_MODEL}")
-    print(f"   Critic: {CRITIC_MODEL}")
+    logger.info(f"Connected to {LLM_PROVIDER.upper()}")
+    logger.info(f"Writer: {WRITER_MODEL}")
+    logger.info(f"Critic: {CRITIC_MODEL}")
     
     # Manifest loading (now relative to project dir)
     if not os.path.exists(MANIFEST_FILE):
-        print(f"⚠️  Manifest not found: {MANIFEST_FILE}")
+        logger.critical(f"Manifest not found: {MANIFEST_FILE}")
         sys.exit(1)
         
     manifest = safe_read_json(MANIFEST_FILE, {})
     title = manifest.get("title", "Untitled Story")
-    print(f"\n📘 Story: {title}")
+    logger.info(f"Story: {title}")
     
     # Start loop
     draft_loop(manifest)

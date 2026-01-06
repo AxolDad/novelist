@@ -1,16 +1,27 @@
-# Secrets
-.env
-.env.local
-.last_active_project
+# OS
+.DS_Store
+Thumbs.db
 
-# Project Data
+# Project Data (Story Specific)
 projects/
 story.db
+*.db
 *.bak
 *.json
+*.tmp
+server.log
+
+# Directories to Ignore
 logs/
 outputs/
 meta/
+scenes/
+planning/
+exports/
+checkpoints/
+.beads/
+.agent/
+.agents/
 
 # Python
 __pycache__/
@@ -23,7 +34,3 @@ dist/
 # IDE
 .vscode/
 .idea/
-
-# OS
-.DS_Store
-Thumbs.db

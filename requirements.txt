@@ -3,3 +3,7 @@ requests
 python-dotenv
 pyyaml
 watchdog
+pytest
+flake8
+fastapi
+uvicorn

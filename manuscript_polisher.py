@@ -17,6 +17,7 @@ from typing import Dict, Any, List, Optional
 from config import WRITER_MODEL, MODEL_PRESETS
 from ollama_client import call_ollama, extract_clean_json
 from file_utils import safe_read_json
+from logger import logger
 
 # Use The Architect for structural tasks
 ARCHITECT_MODEL = MODEL_PRESETS["architect"]["model"]
@@ -199,30 +200,30 @@ def polish_manuscript(
         Path to polished manuscript
     """
     if verbose:
-        print("\n📚 MANUSCRIPT POLISHER")
-        print("   Using The Architect (DeepSeek R1) for structural analysis...")
+        logger.info("MANUSCRIPT POLISHER")
+        logger.info("Using The Architect (DeepSeek R1) for structural analysis...")
     
     # Load raw manuscript
     raw = load_raw_manuscript(manuscript_path)
     if not raw:
         if verbose:
-            print("   ❌ No manuscript found to polish.")
+            logger.warning("No manuscript found to polish.")
         return ""
     
     # Initial cleanup
     if verbose:
-        print("   🧹 Cleaning formatting artifacts...")
+        logger.info("Cleaning formatting artifacts...")
     cleaned = clean_formatting_artifacts(raw)
     
     # Analyze structure
     if verbose:
-        print("   🏗️ Analyzing manuscript structure...")
+        logger.info("Analyzing manuscript structure...")
     structure = analyze_manuscript_structure(cleaned, manifest)
     
     # Reorganize into chapters
     if verbose:
         chapters = structure.get("proposed_chapters", [])
-        print(f"   📖 Organizing into {len(chapters)} chapters...")
+        logger.info(f"Organizing into {len(chapters)} chapters...")
     polished = reorganize_into_chapters(cleaned, structure)
     
     # Determine output path
@@ -240,8 +241,8 @@ def polish_manuscript(
     
     if verbose:
         word_count = len(re.findall(r"\b\w+\b", polished))
-        print(f"   ✅ Polished manuscript saved: {output_path}")
-        print(f"   📊 Final word count: {word_count:,}")
+        logger.info(f"Polished manuscript saved: {output_path}")
+        logger.info(f"Final word count: {word_count:,}")
     
     return output_path
 
