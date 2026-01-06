@@ -6,7 +6,7 @@ Orchestrates the AI-powered novel writing system:
 - Main agent loop for processing scenes
 - Coordinates quality passes and state updates
 
-All helper functions have been extracted to separate modules:
+Modules:
 - config.py: Constants and configuration
 - ollama_client.py: Ollama API communication
 - beads_manager.py: Beads task management
@@ -14,6 +14,10 @@ All helper functions have been extracted to separate modules:
 - quality_passes.py: Style/subtext/drift enforcement
 - state_manager.py: World state and arc ledger
 - prompts.py: System prompts and builders
+- draft_engine.py: Parallel draft generation
+- review_engine.py: Human-in-the-loop review
+- project_manager.py: Project context management
+- ui_helpers.py: Console UI helpers
 """
 
 import sys
@@ -104,9 +108,6 @@ from prompts import (
     build_micro_outline,
 )
 
-import concurrent.futures
-
-
 from manuscript_polisher import polish_manuscript
 
 from story_architect import (
@@ -121,191 +122,35 @@ from story_architect import (
     extract_scene_delta,
 )
 
-# ------------------------------------------------------------------
-#  HUMAN-IN-THE-LOOP TIMEOUT
-# ------------------------------------------------------------------
-HUMAN_REVIEW_TIMEOUT = int(os.getenv("HUMAN_REVIEW_TIMEOUT", "300"))  # 5 minutes default
-
-def input_with_timeout(prompt: str, timeout_seconds: int = HUMAN_REVIEW_TIMEOUT) -> Optional[str]:
-    """
-    Get user input with timeout. Returns None if timeout occurs.
-    Works on Windows (no select.select on stdin).
-    """
-    import threading
-    result = [None]
-    input_received = threading.Event()
-    
-    def get_input():
-        try:
-            result[0] = input(prompt)
-            input_received.set()
-        except EOFError:
-            result[0] = ""
-            input_received.set()
-    
-    thread = threading.Thread(target=get_input, daemon=True)
-    thread.start()
-    
-    # Wait for either input or timeout
-    got_input = input_received.wait(timeout=timeout_seconds)
-    
-    if not got_input:
-        return None  # Timeout
-    return result[0]
-
-
-def generate_ai_chapter_review(manuscript_path: str) -> str:
-    """
-    Generate an AI review of the chapter when human doesn't respond.
-    Uses AUTO_REVIEW_PROVIDER and AUTO_REVIEW_MODEL from config.
-    """
-    from config import AUTO_REVIEW_PROVIDER, AUTO_REVIEW_MODEL, AUTO_REVIEW_PROMPT
-    from config import OPENAI_API_KEY, OPENAI_BASE_URL
-    
-    try:
-        with open(manuscript_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        # Get last ~6000 chars (roughly the recent chapter)
-        excerpt = content[-6000:] if len(content) > 6000 else content
-        
-        messages = [
-            {"role": "system", "content": AUTO_REVIEW_PROMPT},
-            {"role": "user", "content": f"CHAPTER EXCERPT:\n\n{excerpt}"}
-        ]
-        
-        # Route to appropriate provider
-        if AUTO_REVIEW_PROVIDER == "openai" and OPENAI_API_KEY:
-            # Use OpenAI API directly
-            import requests
-            headers = {
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": AUTO_REVIEW_MODEL,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 500
-            }
-            response = requests.post(
-                f"{OPENAI_BASE_URL}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60
-            )
-            if response.status_code == 200:
-                data = response.json()
-                review = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                return review or "Auto-review unavailable. Continuing..."
-            else:
-                return f"OpenAI API error: {response.status_code}"
-        else:
-            # Use standard call_ollama (local or configured provider)
-            review = call_ollama(messages, model=AUTO_REVIEW_MODEL)
-            return review or "Auto-review unavailable. Continuing..."
-    except Exception as e:
-        return f"Auto-review skipped: {e}"
-
-
-def generate_parallel_drafts(system_context: str, user_prompt: str) -> Optional[str]:
-    """Generates 3 drafts with different temperatures and selects the best one."""
-    messages = [
-        {"role": "system", "content": system_context},
-        {"role": "user", "content": user_prompt}
-    ]
-    
-    # Temperatures: 0.7 (Safe), 0.9 (Creative), 1.1 (Chaotic/Innovative)
-    temps = [0.7, 0.9, 1.1]
-    
-    print(f"   ⚖️  Drafting 3 variants in parallel (Temps: {temps})...")
-    
-    drafts = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [
-            executor.submit(call_ollama, messages, WRITER_MODEL, False, 32768, None, t)
-            for t in temps
-        ]
-        
-        for f in concurrent.futures.as_completed(futures):
-            res = f.result()
-            if res:
-                drafts.append(res)
-    
-    if not drafts:
-        return None
-        
-    if len(drafts) == 1:
-        return drafts[0]
-        
-    print(f"   🧐 Evaluating {len(drafts)} drafts via Editor-in-Chief...")
-    selection = select_best_draft(drafts)
-    idx = selection.get("best_draft_index", 1) - 1
-    reason = selection.get("reasoning", "No valid reason provided.")
-    
-    # Safety Check
-    if idx < 0 or idx >= len(drafts):
-        idx = 0
-        
-    print(f"   🏆 Selected Draft {idx+1}: {reason[:100]}...")
-    return drafts[idx]
-
-
-# ------------------------------------------------------------------
-#  PROJECT PATH CONFIGURATION
-# ------------------------------------------------------------------
-# Global paths (can be overridden by setup_project_paths)
-PROJECT_PATH = None
-
-def setup_project_paths(project_path: str) -> Dict[str, str]:
-    """
-    Override global config paths to use project-specific files.
-    
-    Args:
-        project_path: Path to project folder (e.g., "projects/my_novel")
-    
-    Returns:
-        Dict of path names to actual paths
-    """
-    global MANIFEST_FILE, STATE_FILE, ARC_FILE, CHAR_BIBLE_FILE
-    global MACRO_OUTLINE_FILE, PROGRESS_FILE, OUTPUT_DIR, SCENES_DIR
-    global MANUSCRIPT_FILE_DEFAULT, PROJECT_PATH
-    
-    # Normalize path for WSL/Cross-platform compatibility
-    project_path = project_path.replace("\\", "/")
-    PROJECT_PATH = project_path
-    
-    # Override all file paths
-    import config
-    config.MANIFEST_FILE = os.path.join(project_path, "story_manifest.json")
-    config.STATE_FILE = os.path.join(project_path, "world_state.json")
-    config.ARC_FILE = os.path.join(project_path, "arc_ledger.json")
-    config.CHAR_BIBLE_FILE = os.path.join(project_path, "character_bible.json")
-    config.MACRO_OUTLINE_FILE = os.path.join(project_path, "meta", "macro_outline.json")
-    config.PROGRESS_FILE = os.path.join(project_path, "meta", "progress_ledger.json")
-    config.OUTPUT_DIR = os.path.join(project_path, "outputs")
-    config.SCENES_DIR = os.path.join(project_path, "outputs", "scenes")
-    config.MANUSCRIPT_FILE_DEFAULT = os.path.join(project_path, "outputs", "manuscript.md")
-    
-    # Also update local copies
-    MANIFEST_FILE = config.MANIFEST_FILE
-    STATE_FILE = config.STATE_FILE
-    ARC_FILE = config.ARC_FILE
-    CHAR_BIBLE_FILE = config.CHAR_BIBLE_FILE
-    MACRO_OUTLINE_FILE = config.MACRO_OUTLINE_FILE
-    PROGRESS_FILE = config.PROGRESS_FILE
-    OUTPUT_DIR = config.OUTPUT_DIR
-    SCENES_DIR = config.SCENES_DIR
-    MANUSCRIPT_FILE_DEFAULT = config.MANUSCRIPT_FILE_DEFAULT
-    
-    # Ensure directories exist
-    os.makedirs(os.path.join(project_path, "meta", "checkpoints"), exist_ok=True)
-    os.makedirs(config.SCENES_DIR, exist_ok=True)
-    
-    return {
-        "manifest": config.MANIFEST_FILE,
-        "world_state": config.STATE_FILE,
-        "manuscript": config.MANUSCRIPT_FILE_DEFAULT,
-    }
+# New extracted modules
+from draft_engine import generate_parallel_drafts
+from review_engine import (
+    HUMAN_REVIEW_TIMEOUT,
+    input_with_timeout,
+    generate_ai_chapter_review,
+    run_chapter_checkpoint,
+)
+from project_manager import (
+    setup_project_paths,
+    run_project_picker,
+    handle_project_argument,
+    PROJECT_PATH,
+)
+from ui_helpers import (
+    print_banner,
+    print_section,
+    print_progress,
+    print_model_info,
+    print_story_header,
+    status_drafting,
+    status_tribunal,
+    status_scores,
+    status_pass,
+    status_fail,
+    status_world_update,
+    status_drift,
+    breath,
+)
 
 
 # ------------------------------------------------------------------
