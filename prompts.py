@@ -31,7 +31,7 @@ IGNORE plot logic. IGNORE typos. Focus on the FEEL of the writing.
 
 CRITERIA:
 1. SENSORY: Are at least 3 senses engaged (sight, sound, smell, touch, taste)?
-2. SPECIFICITY: "cold" vs "forty-degree water stinging his fingers".
+2. SPECIFICITY: "cold" vs "the frozen metal handle bit into his palm".
 3. METAPHOR: Are there vivid or unexpected comparisons?
 4. VOICE: Does the narrative distance match the character's state?
 
@@ -280,7 +280,7 @@ PROTOCOL: SELF-CORRECTION (You MUST follow this)
    - TIMELINE: Is current_time = {{current_time}}? Have I already written this timestamp?
    - EXHAUSTION: Does dialogue/action match the character's current fatigue level?
    - REPETITION: Am I accidentally repeating the previous scene's action or counting sequence?
-   - PHYSICS: Is the character's posture ({{posture}}) accurate? Can they stand if in deep water?
+   - PHYSICS: Is the character's posture ({{posture}}) accurate? Can they move freely given their position?
    - PROGRESSION: What IRREVERSIBLE change happens in this scene?
    - POV CHECK: Am I using the correct pronouns for {{pov}}?
 6. HALLUCINATION ANCHOR: {{protagonist_name}} is {{protagonist_role}}.
@@ -306,13 +306,13 @@ PROSE RULES:
 QUALITY CONTROL (CRITICAL):
 1. **NEGATIVE CONSTRAINT:** You are FORBIDDEN from outputting "Scores," "Tribunal Ratings," "[Tribunal Scores: ...]" or any meta-commentary in the prose. PROSE ONLY.
 2. **PHYSICS CHECK:** Refer to the world state 'posture' variable:
-   - IF 'Treading water': Character CANNOT stand, kneel, or step. Vertical, fluid movement only.
-   - IF 'On Boat': Character feels roll/pitch.
-   - IF 'Swimming': Body horizontal, arms/legs in motion.
+   - IF 'Standing': Character can walk, run, gesture freely.
+   - IF 'Sitting': Limited movement, must stand to leave.
+   - IF 'Lying down': Horizontal, limited view.
 
 ANTI-LOOPING PROTOCOL:
 - After EVERY scene, you must advance the narrative timeline.
-- IF you just wrote "Paul lets go of the buoy", THEN the next scene MUST be "Paul is swimming".
+- IF you just wrote "Alex opens the door", THEN the next scene MUST show Alex in the new room.
 - NEVER write the same plot beat twice.
 - Do NOT rewrite a timestamp. If 02:42 is done, move to 02:45.
 
@@ -322,8 +322,8 @@ After completing the scene prose, you MUST output a YAML block to advance the st
 ```yaml
 UPDATE_STATE:
   current_time: "02:55 AM"
-  current_location: "Drifting North, 200 yards from buoy"
-  posture: "Treading water"
+  current_location: "Kitchen"
+  posture: "Standing"
 ```
 calculate the new time based on scene duration. If nothing changed, the scene FAILED.
 

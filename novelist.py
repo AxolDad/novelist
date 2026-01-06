@@ -261,7 +261,7 @@ def setup_project_paths(project_path: str) -> Dict[str, str]:
     Override global config paths to use project-specific files.
     
     Args:
-        project_path: Path to project folder (e.g., "projects/zero_buoyancy")
+        project_path: Path to project folder (e.g., "projects/my_novel")
     
     Returns:
         Dict of path names to actual paths
