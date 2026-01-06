@@ -155,23 +155,54 @@ def input_with_timeout(prompt: str, timeout_seconds: int = HUMAN_REVIEW_TIMEOUT)
 
 
 def generate_ai_chapter_review(manuscript_path: str) -> str:
-    """Generate an AI review of the chapter when human doesn't respond."""
+    """
+    Generate an AI review of the chapter when human doesn't respond.
+    Uses AUTO_REVIEW_PROVIDER and AUTO_REVIEW_MODEL from config.
+    """
+    from config import AUTO_REVIEW_PROVIDER, AUTO_REVIEW_MODEL, AUTO_REVIEW_PROMPT
+    from config import OPENAI_API_KEY, OPENAI_BASE_URL
+    
     try:
         with open(manuscript_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        # Get last ~4000 chars (roughly the recent chapter)
-        excerpt = content[-4000:] if len(content) > 4000 else content
+        # Get last ~6000 chars (roughly the recent chapter)
+        excerpt = content[-6000:] if len(content) > 6000 else content
         
-        prompt = f"""Review this chapter excerpt briefly. Note 1-2 strengths and 1-2 areas for improvement.
-Be concise (3-4 sentences max).
-
-EXCERPT:
-{excerpt}
-
-OUTPUT: Brief review in plain text."""
+        messages = [
+            {"role": "system", "content": AUTO_REVIEW_PROMPT},
+            {"role": "user", "content": f"CHAPTER EXCERPT:\n\n{excerpt}"}
+        ]
         
-        review = call_ollama([{"role": "user", "content": prompt}], model=CRITIC_MODEL)
-        return review or "Auto-review unavailable. Continuing..."
+        # Route to appropriate provider
+        if AUTO_REVIEW_PROVIDER == "openai" and OPENAI_API_KEY:
+            # Use OpenAI API directly
+            import requests
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": AUTO_REVIEW_MODEL,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 500
+            }
+            response = requests.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+            if response.status_code == 200:
+                data = response.json()
+                review = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return review or "Auto-review unavailable. Continuing..."
+            else:
+                return f"OpenAI API error: {response.status_code}"
+        else:
+            # Use standard call_ollama (local or configured provider)
+            review = call_ollama(messages, model=AUTO_REVIEW_MODEL)
+            return review or "Auto-review unavailable. Continuing..."
     except Exception as e:
         return f"Auto-review skipped: {e}"
 

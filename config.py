@@ -43,6 +43,20 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # ------------------------------------------------------------------
+#  AUTO-REVIEW CONFIGURATION (Human-in-the-Loop Timeout Fallback)
+# ------------------------------------------------------------------
+# When human doesn't respond within timeout, use this model for auto-review
+# Set AUTO_REVIEW_PROVIDER to "openai" to use cloud API for review only
+AUTO_REVIEW_PROVIDER = os.getenv("AUTO_REVIEW_PROVIDER", "").lower() or LLM_PROVIDER
+AUTO_REVIEW_MODEL = os.getenv("AUTO_REVIEW_MODEL", "").strip() or CRITIC_MODEL
+AUTO_REVIEW_PROMPT = os.getenv("AUTO_REVIEW_PROMPT", """You are a skilled literary editor reviewing a chapter draft.
+Provide a brief but insightful review (3-5 sentences) covering:
+1. One specific strength (e.g., dialogue, pacing, imagery)
+2. One area for improvement (be constructive)
+3. Any continuity or consistency issues you noticed
+Be direct and actionable. Do not summarize the plot.""")
+
+# ------------------------------------------------------------------
 #  FILE PATHS
 # ------------------------------------------------------------------
 MANIFEST_FILE = "story_manifest.json"
@@ -78,7 +92,7 @@ LEGACY_CHECKPOINT_DIR = "checkpoints"
 #  TIMEOUT & RETRY CONTROLS
 # ------------------------------------------------------------------
 # If you see: Read timed out. (read timeout=180) -> increase OLLAMA_READ_TIMEOUT
-OLLAMA_CONNECT_TIMEOUT = int(os.getenv("OLLAMA_CONNECT_TIMEOUT", "150"))
+OLLAMA_CONNECT_TIMEOUT = int(os.getenv("OLLAMA_CONNECT_TIMEOUT", "250"))
 OLLAMA_READ_TIMEOUT = int(os.getenv("OLLAMA_READ_TIMEOUT", "800"))
 OLLAMA_MAX_RETRIES = int(os.getenv("OLLAMA_MAX_RETRIES", "5"))
 OLLAMA_RETRY_BACKOFF_BASE = 3.0       # exponential backoff base
